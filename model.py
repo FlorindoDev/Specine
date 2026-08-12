@@ -3,8 +3,20 @@ from openai import OpenAI
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+LOCAL_MODELS = frozenset({
+    'Qwen2.5-Coder-7B-Instruct',
+    'deepseek-coder-7b-instruct-v1.5',
+})
+API_MODELS = frozenset({
+    'gpt-4o-mini-2024-07-18',
+    'gemini-1.5-flash-002',
+})
+SUPPORTED_MODELS = LOCAL_MODELS | API_MODELS
+DEFAULT_MODEL = 'deepseek-coder-7b-instruct-v1.5'
+
+
 def load_model(model_name):
-    if model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
+    if model_name in LOCAL_MODELS:
         model_name = f"./LLMs/{model_name}"
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -58,6 +70,15 @@ def generate_code(args, prompt, model, tokenizer, max_new_tokens=1024):
         print(code)
 
     return code
+
+
+def generate_text(args, prompt, model, tokenizer, max_tokens=1024):
+    if args.model_name in LOCAL_MODELS:
+        return generate_code(args, prompt, model, tokenizer, max_tokens)
+    if args.model_name in API_MODELS:
+        return generate_code_api(args, prompt, max_tokens)
+    supported = ", ".join(sorted(SUPPORTED_MODELS))
+    raise ValueError(f"Unsupported model '{args.model_name}'. Supported models: {supported}")
 
 
 def generate_code_api(args, prompt, max_tokens=1024):

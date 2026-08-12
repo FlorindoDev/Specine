@@ -4,15 +4,41 @@ import random
 import argparse
 import numpy as np
 from tqdm import tqdm
+from coder_workflow import (
+    ArchitectureVariant,
+    CodeGenerationRequest,
+    create_coder_workflow,
+    validate_architecture_variant,
+)
 from eval_code import eval_code
-from data import load_data, get_specification, to_code_prompt
-from model import load_model, generate_code, generate_code_api
+from benchmarks import BENCHMARKS
+from data import build_specification, get_evaluation_test_cases, load_data, to_code_prompt
+from model import (
+    API_MODELS,
+    DEFAULT_MODEL,
+    LOCAL_MODELS,
+    SUPPORTED_MODELS,
+    generate_text,
+    load_model,
+)
 from sanitize import sanitize_code, remove_code_blocks
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def load_coder_trace(path):
+    if not os.path.exists(path):
+        return {"workflow": "unknown", "artifacts": []}
+    with open(path, 'r', encoding='utf-8') as trace_file:
+        return json.load(trace_file)
+
+
+def save_coder_trace(path, trace):
+    with open(path, 'w', encoding='utf-8') as trace_file:
+        json.dump(trace, trace_file, ensure_ascii=False, indent=2)
+
+
 def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_result, public_test_cases, model, tokenizer,
-                   optimization_list, cache_list):
+                   coder_workflow, optimization_list, cache_list):
     initial_mutation_instruction_list = [
         ["Specification Background",
              ["Let's provide a concise background for the provided programming specification, explaining the motivation, application context, or any domain-specific knowledge needed. Ensure the explanation is clear and accessible to developers without deep prior knowledge of the domain. This will help large language models understand it better. (Response constraints: Max 200 words, NO code)",
@@ -59,18 +85,12 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
         code_understanding_instruction += '''(6) External APIs (Optional): Lists any external APIs or library functions used by the code and describes their purpose and interactions.\n'''
         code_understanding_instruction += '''(7) Additional Explanation: Provides supplementary information, such as design intentions, potential limitations, or special considerations.\n'''
         code_understanding_prompt = f"#CODE:\n```python\n{ori_code}\n```\n\n#INSTRUCTION:\n{code_understanding_instruction}"
-        if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-            code_understanding = generate_code(args, code_understanding_prompt, model, tokenizer, 512)
-        elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-            code_understanding = generate_code_api(args, code_understanding_prompt, 512)
+        code_understanding = generate_text(args, code_understanding_prompt, model, tokenizer, 512)
         code_understanding = code_understanding.replace("\n\n", "\n")
 
         optimization_points_instruction = "Analyze the input programming specification and the lifted specification to identify misalignments or omissions. Select one or more ingredients to improve the input programming specification from the following ten options: ['Specification Background', 'Specification Purpose', 'Key Concepts', 'Input Requirement', 'Output Requirement', 'Examples with Explanations', 'Edge/Corner Cases', 'APIs', 'Error Handling Requirements']. Respond with a SORTED list by importance, e.g., ['Output Requirement', 'Specification Purpose', 'Examples with Explanations']. (Response constraints: Max 50 words, NO code)"
         optimization_points_prompt = f"{ori_specification}\n\n#INCORRECT GENERATED CODE:\n```python\n{ori_code}\n```\n\n#LIFTED SPECIFICATION OF INCORRECT GENERATED CODE:\n```plaintext\n{code_understanding}\n```\n\n#INSTRUCTION:\n{optimization_points_instruction}"
-        if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-            optimization_points = generate_code(args, optimization_points_prompt, model, tokenizer, 64)
-        elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-            optimization_points = generate_code_api(args, optimization_points_prompt, 64)
+        optimization_points = generate_text(args, optimization_points_prompt, model, tokenizer, 64)
         cache_list[ori_specification] = optimization_points
 
     optimization_points_list = []
@@ -96,10 +116,7 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
 
     new_specification = ori_specification.replace('\n\n\n\n', '\n').replace('\n\n\n', '\n').strip()
     optimization_rule_prompt = f"{new_specification}\n\n#INSTRUCTION:\n{optimization_points_list[0][1][0]}"
-    if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-        optimization_rule = generate_code(args, optimization_rule_prompt, model, tokenizer, 256)
-    elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-        optimization_rule = generate_code_api(args, optimization_rule_prompt, 256)
+    optimization_rule = generate_text(args, optimization_rule_prompt, model, tokenizer, 256)
     optimization_rule = remove_code_blocks(optimization_rule).replace('\n\n', '\n')
     new_specification += f"\n\n#{optimization_points_list[0][0].upper()}:\n```plaintext\n{optimization_rule}\n```"
 
@@ -111,93 +128,126 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
         "Please provide a self-contained Python script that solves the above programming specification in a markdown code block (without text and test cases):"
     new_prompt += "\n\n#CODE:\n```python\n\n```\n"
 
-    if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-        new_code = generate_code(args, new_prompt, model, tokenizer, 1024)
-    elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-        new_code = generate_code_api(args, new_prompt)
+    coder_result = coder_workflow.generate(CodeGenerationRequest(new_specification, new_prompt))
+    new_code = coder_result.code
     new_code = sanitize_code(new_code, ["```python", "```"])
     _, new_test_result = eval_code(args, public_test_cases, new_code)
 
-    return new_specification, new_code, new_test_result, optimization_points_list[0][0], cache_list
-
+    return (
+        new_specification,
+        new_code,
+        new_test_result,
+        optimization_points_list[0][0],
+        cache_list,
+        coder_result.to_dict(),
+    )
 
 def alignment():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_name", default='', type=str, required=True, help='apps, code_contests, xCodeEval')
-    parser.add_argument("--model_name", default='', type=str, required=True,
-                        help='Qwen2.5-Coder-7B-Instruct, deepseek-coder-7b-instruct-v1.5, gpt-4o-mini-2024-07-18, gemini-1.5-flash-002')
+    parser.add_argument(
+        "--benchmark",
+        choices=tuple(BENCHMARKS),
+        required=True,
+        help="apps, apps-eval, codecontests-raw",
+    )
+    parser.add_argument(
+        "--model_name",
+        default=DEFAULT_MODEL,
+        choices=sorted(SUPPORTED_MODELS),
+        help=f"modello LLM; default: {DEFAULT_MODEL}",
+    )
+    parser.add_argument(
+        "--variant",
+        default=ArchitectureVariant.BASE.value,
+        choices=[variant.value for variant in ArchitectureVariant],
+        help="base: original Specine; A: MetaGPT Coder; B/C: reserved for Skill extensions",
+    )
     parser.add_argument("--save_dir", default='', type=str, required=True)
     parser.add_argument("--max_iter", default=10, type=int)
-    parser.add_argument("--debug", default=False, type=bool)
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    args.data_name = args.benchmark
+    args.variant = ArchitectureVariant(args.variant)
+    try:
+        validate_architecture_variant(args.variant)
+    except NotImplementedError as error:
+        parser.error(str(error))
+    if args.variant != ArchitectureVariant.BASE:
+        args.save_dir = f"{args.save_dir}_{args.variant.value}"
 
-    test_data = load_data(args.data_name)
+    test_data = load_data(args.benchmark)
 
-    if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
+    if args.model_name in LOCAL_MODELS:
         model, tokenizer = load_model(args.model_name)
-    elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
+    elif args.model_name in API_MODELS:
         model, tokenizer = None, None
+    else:
+        parser.error(
+            f"unsupported --model_name '{args.model_name}'; "
+            f"choose one of: {', '.join(sorted(SUPPORTED_MODELS))}"
+        )
+
+    coder_workflow = create_coder_workflow(
+        args.variant,
+        lambda prompt, max_tokens: generate_text(
+            args,
+            prompt,
+            model,
+            tokenizer,
+            max_tokens,
+        ),
+    )
+    initial_run_name = "test" if args.variant == ArchitectureVariant.BASE else f"test_{args.variant.value}"
+    initial_result_dir = f'./Results/{args.model_name}/{args.data_name}/{initial_run_name}'
 
     ori_test_results = {}
     new_test_results = [{} for _ in range(args.max_iter)]
 
     for index, data_instance in enumerate(tqdm(test_data)):
         problem_id = data_instance['problem_id']
-        all_test_cases = data_instance['all_test_cases']
+        all_test_cases = get_evaluation_test_cases(args.benchmark, data_instance)
 
-        if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result'):
-            if args.data_name == 'apps':
-                prompt = data_instance['question']
-                starter_code = data_instance['starter_code']
-                if not starter_code:
-                    starter_code = None
-                input_from, output_to, input_spec, output_spec, notes = None, None, None, None, None
-            elif args.data_name == 'code_contests':
-                prompt = data_instance['description']
-                starter_code = None
-                input_from, output_to, input_spec, output_spec, notes = None, None, None, None, None
-            elif args.data_name == 'xCodeEval':
-                prompt = data_instance['description']
-                starter_code = None
-                input_from = data_instance['input_from']
-                output_to = data_instance['output_to']
-                input_spec = data_instance['input_spec']
-                output_spec = data_instance['output_spec']
-                notes = data_instance['notes']
-            ori_specification = get_specification(args, all_test_cases, prompt, starter_code, input_from, output_to,
-                                                  input_spec, output_spec, notes)
+        initial_prompt_path = f'{initial_result_dir}/{problem_id}_prompt'
+        initial_code_path = f'{initial_result_dir}/{problem_id}_code'
+        initial_test_result_path = f'{initial_result_dir}/{problem_id}_test_result'
+        initial_coder_trace_path = f'{initial_result_dir}/{problem_id}_coder_trace.json'
+        if not all(os.path.exists(path) for path in (
+            initial_prompt_path,
+            initial_code_path,
+            initial_test_result_path,
+        )):
+            ori_specification = build_specification(
+                args.benchmark,
+                data_instance,
+                all_test_cases,
+            )
             ori_prompt = to_code_prompt(ori_specification, all_test_cases)
 
-            if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-                ori_code = generate_code(args, ori_prompt, model, tokenizer, 1024)
-            elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-                ori_code = generate_code_api(args, ori_prompt)
+            coder_result = coder_workflow.generate(CodeGenerationRequest(ori_specification, ori_prompt))
+            ori_code = coder_result.code
             if ori_code is None:
                 ori_code = ''
             ori_code = sanitize_code(ori_code, ["```python", "```"])
             _, ori_test_result = eval_code(args, all_test_cases, ori_code)
 
-            if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/test/'):
-                os.makedirs(f'./Results/{args.model_name}/{args.data_name}/test/')
-            open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_prompt', 'w',
-                 encoding='utf-8').write(ori_prompt)
-            open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_code', 'w',
-                 encoding='utf-8').write(ori_code)
-            open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result', 'w',
-                 encoding='utf-8').write(str(ori_test_result))
+            os.makedirs(initial_result_dir, exist_ok=True)
+            open(initial_prompt_path, 'w', encoding='utf-8').write(ori_prompt)
+            open(initial_code_path, 'w', encoding='utf-8').write(ori_code)
+            open(initial_test_result_path, 'w', encoding='utf-8').write(str(ori_test_result))
+            save_coder_trace(initial_coder_trace_path, coder_result.to_dict())
 
         ori_test_results[problem_id] = \
-            float(open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result','r').read())
+            float(open(initial_test_result_path, 'r').read())
         for iter_n in range(args.max_iter):
             new_test_results[iter_n][problem_id] = \
-                float(open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result', 'r').read())
+                float(open(initial_test_result_path, 'r').read())
 
     ori_pass1 = round(list(ori_test_results.values()).count(1.0) / len(ori_test_results) * 100, 2)
     ori_apr = round(np.average(list(ori_test_results.values())) * 100, 2)
 
     for index, data_instance in enumerate(tqdm(test_data)):
         problem_id = data_instance['problem_id']
-        all_test_cases = data_instance['all_test_cases']
+        all_test_cases = get_evaluation_test_cases(args.benchmark, data_instance)
         public_test_cases = data_instance['public_test_cases']
 
         all_files_exist = []
@@ -216,33 +266,26 @@ def alignment():
             print('*' * 40)
             continue
 
-        if args.data_name == 'apps':
-            prompt = data_instance['question']
-            starter_code = data_instance['starter_code']
-            if not starter_code:
-                starter_code = None
-            input_from, output_to, input_spec, output_spec, notes = None, None, None, None, None
-        elif args.data_name == 'code_contests':
-            prompt = data_instance['description']
-            starter_code = None
-            input_from, output_to, input_spec, output_spec, notes = None, None, None, None, None
-        elif args.data_name == 'xCodeEval':
-            prompt = data_instance['description']
-            starter_code = None
-            input_from = data_instance['input_from']
-            output_to = data_instance['output_to']
-            input_spec = data_instance['input_spec']
-            output_spec = data_instance['output_spec']
-            notes = data_instance['notes']
-        ori_specification = get_specification(args, public_test_cases, prompt, starter_code, input_from, output_to, input_spec, output_spec, notes)
+        ori_specification = build_specification(
+            args.benchmark,
+            data_instance,
+            public_test_cases,
+        )
         ori_specification = f'#PROGRAMMING SPECIFICATION:\n```plaintext\n{ori_specification}\n```'
 
-        if os.path.exists(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_prompt') and \
-                os.path.exists(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_code') and \
-                os.path.exists(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result'):
-            ori_prompt = open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_prompt', 'r').read()
-            ori_code = open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_code', 'r').read()
-            ori_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/test/{problem_id}_test_result', 'r').read())
+        initial_prompt_path = f'{initial_result_dir}/{problem_id}_prompt'
+        initial_code_path = f'{initial_result_dir}/{problem_id}_code'
+        initial_test_result_path = f'{initial_result_dir}/{problem_id}_test_result'
+        initial_coder_trace_path = f'{initial_result_dir}/{problem_id}_coder_trace.json'
+        if all(os.path.exists(path) for path in (
+            initial_prompt_path,
+            initial_code_path,
+            initial_test_result_path,
+        )):
+            ori_prompt = open(initial_prompt_path, 'r').read()
+            ori_code = open(initial_code_path, 'r').read()
+            ori_test_result_all = float(open(initial_test_result_path, 'r').read())
+            initial_coder_trace = load_coder_trace(initial_coder_trace_path)
             ori_code = sanitize_code(ori_code, ["```python", "```"])
             if ori_test_result_all == 1.0:
                 print()
@@ -256,6 +299,10 @@ def alignment():
                          encoding='utf-8').write(ori_code)
                     open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w',
                          encoding='utf-8').write(str(ori_test_result_all))
+                    save_coder_trace(
+                        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                        initial_coder_trace,
+                    )
                     new_test_results[iter_n][problem_id] = ori_test_result_all
                     new_pass1 = round(list(new_test_results[iter_n].values()).count(1.0) / len(new_test_results[0]) * 100, 2)
                     new_apr = round(np.average(list(new_test_results[iter_n].values())) * 100, 2)
@@ -273,6 +320,10 @@ def alignment():
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'w', encoding='utf-8').write(ori_prompt)
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(ori_code)
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(ori_test_result_all))
+                        save_coder_trace(
+                            f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                            initial_coder_trace,
+                        )
                         new_test_results[iter_n][problem_id] = ori_test_result_all
                         new_pass1 = round(list(new_test_results[iter_n].values()).count(1.0) / len(new_test_results[0]) * 100, 2)
                         new_apr = round(np.average(list(new_test_results[iter_n].values())) * 100, 2)
@@ -293,10 +344,9 @@ def alignment():
             generated_test_cases_prompt += f"\n(3) To assess the function's performance and scalability with large data samples."
             generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
             generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-                generated_test_cases_ori = generate_code(args, generated_test_cases_prompt, model, tokenizer, 1024)
-            elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-                generated_test_cases_ori = generate_code_api(args, generated_test_cases_prompt, 1024)
+            generated_test_cases_ori = generate_text(
+                args, generated_test_cases_prompt, model, tokenizer, 1024
+            )
 
             try:
                 generated_test_cases_ori = sanitize_code(generated_test_cases_ori, ["```json", "```"])
@@ -321,10 +371,9 @@ def alignment():
             generated_test_cases_prompt += f"\n(3) To assess the function’s performance and scalability with large data samples."
             generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
             generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            if args.model_name in ['Qwen2.5-Coder-7B-Instruct', 'deepseek-coder-7b-instruct-v1.5']:
-                generated_test_cases_ori = generate_code(args, generated_test_cases_prompt, model, tokenizer, 1024)
-            elif args.model_name in ['gpt-4o-mini-2024-07-18', 'gemini-1.5-flash-002']:
-                generated_test_cases_ori = generate_code_api(args, generated_test_cases_prompt, 1024)
+            generated_test_cases_ori = generate_text(
+                args, generated_test_cases_prompt, model, tokenizer, 1024
+            )
 
             try:
                 generated_test_cases_ori = sanitize_code(generated_test_cases_ori, ["```json", "```"])
@@ -351,6 +400,7 @@ def alignment():
             ori_test_result2 = 0.0
 
         best_specification, best_code, best_test_result, best_test_result2, best_test_result_all = ori_specification, ori_code, ori_test_result, ori_test_result2, ori_test_result_all
+        best_coder_trace = initial_coder_trace
         best_optimization = 'None'
         optimization_list = []
         cache_list = {}
@@ -364,6 +414,8 @@ def alignment():
                 new_specification = open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'r', encoding='utf-8').read()
                 new_code = open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'r', encoding='utf-8').read()
                 new_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
+                coder_trace_path = f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json'
+                new_coder_trace = load_coder_trace(coder_trace_path)
                 new_code = sanitize_code(new_code, ["```python", "```"])
                 _, new_test_result = eval_code(args, public_test_cases, new_code)
                 if len(generated_test_cases["inputs"]):
@@ -378,6 +430,7 @@ def alignment():
                     best_test_result = new_test_result
                     best_test_result2 = new_test_result2
                     best_test_result_all = new_test_result_all
+                    best_coder_trace = new_coder_trace
                     new_test_results[iter_n][problem_id] = best_test_result_all
                 elif best_test_result == new_test_result and best_test_result2 < new_test_result2:
                     best_specification = new_specification
@@ -385,13 +438,14 @@ def alignment():
                     best_test_result = new_test_result
                     best_test_result2 = new_test_result2
                     best_test_result_all = new_test_result_all
+                    best_coder_trace = new_coder_trace
                     new_test_results[iter_n][problem_id] = best_test_result_all
                 else:
                     new_test_results[iter_n][problem_id] = best_test_result_all
             else:
-                new_specification, new_code, new_test_result, new_optimization, cache_list = \
+                new_specification, new_code, new_test_result, new_optimization, cache_list, new_coder_trace = \
                     alignment_rule(args, problem_id, best_specification, best_code, best_test_result, public_test_cases,
-                                  model, tokenizer, optimization_list, cache_list)
+                                  model, tokenizer, coder_workflow, optimization_list, cache_list)
                 optimization_list.append(new_optimization)
                 new_code = sanitize_code(new_code, ["```python", "```"])
                 if len(generated_test_cases["inputs"]):
@@ -408,6 +462,7 @@ def alignment():
                     best_test_result = new_test_result
                     best_test_result2 = new_test_result2
                     best_test_result_all = new_test_result_all
+                    best_coder_trace = new_coder_trace
                     new_test_results[iter_n][problem_id] = new_test_result_all
                 elif best_test_result == new_test_result and best_test_result2 < new_test_result2:
                     best_optimization = new_optimization
@@ -416,6 +471,7 @@ def alignment():
                     best_test_result = new_test_result
                     best_test_result2 = new_test_result2
                     best_test_result_all = new_test_result_all
+                    best_coder_trace = new_coder_trace
                     new_test_results[iter_n][problem_id] = new_test_result_all
                 else:
                     new_test_results[iter_n][problem_id] = best_test_result_all
@@ -428,6 +484,10 @@ def alignment():
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{temp_iter_n}', 'w', encoding='utf-8').write(best_code)
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{temp_iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
                         open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{temp_iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
+                        save_coder_trace(
+                            f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{temp_iter_n}.json',
+                            best_coder_trace,
+                        )
                         new_test_results[temp_iter_n][problem_id] = best_test_result_all
                         print(f"        >> Iter={temp_iter_n} [id={problem_id}](hierarchical criteria): {round(best_test_result * 100, 2)}%({round(best_test_result2 * 100, 2)}%) ==> {round(new_test_result * 100, 2)}%({round(new_test_result2 * 100, 2)}%)")
                     break
@@ -438,6 +498,10 @@ def alignment():
                     open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(best_code)
                     open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
                     open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
+                    save_coder_trace(
+                        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                        best_coder_trace,
+                    )
 
         print('*' * 40)
         for iter_n in range(args.max_iter):

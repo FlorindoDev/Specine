@@ -24,7 +24,14 @@ def timeout_handler(signum, frame):
     raise TimeoutException
 
 
-signal.signal(signal.SIGALRM, timeout_handler)
+_HAS_SIGALRM = hasattr(signal, "SIGALRM")
+if _HAS_SIGALRM:
+    signal.signal(signal.SIGALRM, timeout_handler)
+
+
+def _set_alarm(seconds):
+    if _HAS_SIGALRM:
+        signal.alarm(seconds)
 
 
 class Capturing(list):
@@ -70,7 +77,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
             sol += code
             if debug:
                 print(f"sol = {sol}")
-            signal.alarm(timeout)
+            _set_alarm(timeout)
 
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
@@ -81,15 +88,15 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                     tmp = tmp_sol
                 else:
                     tmp = tmp_sol.Solution()
-                signal.alarm(0)
+                _set_alarm(0)
             except Exception as e:
                 sys.stdout = old_stdout
-                signal.alarm(0)
+                _set_alarm(0)
                 results.append(-2)
                 return results
             finally:
                 sys.stdout = old_stdout
-            signal.alarm(0)
+            _set_alarm(0)
 
         elif which_type == CODE_TYPE.standard_input:
             tmp_code = code.split("\n")
@@ -120,7 +127,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
             if debug:
                 print(f"sol = {sol}")
             method_name = "code"
-            signal.alarm(timeout)
+            _set_alarm(timeout)
 
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
@@ -128,15 +135,15 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                 tmp_sol = RuntimeModule.from_string("tmp_sol", "", sol)
                 captured_output = sys.stdout.getvalue()
                 tmp = tmp_sol
-                signal.alarm(0)
+                _set_alarm(0)
             except Exception as e:
                 sys.stdout = old_stdout
-                signal.alarm(0)
+                _set_alarm(0)
                 results.append(-2)
                 return results
             finally:
                 sys.stdout = old_stdout
-            signal.alarm(0)
+            _set_alarm(0)
 
         if debug:
             print(f"get method = {datetime.now().time()}")
@@ -144,7 +151,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
         try:
             method = getattr(tmp, method_name)
         except:
-            signal.alarm(0)
+            _set_alarm(0)
             e = sys.exc_info()
             results.append(-2)
             return results
@@ -171,7 +178,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                     f"time: {datetime.now().time()} testing index = {index}  inputs = {inputs}, {type(inputs)}. type = {which_type}")
 
             if which_type == CODE_TYPE.call_based:
-                signal.alarm(timeout)
+                _set_alarm(timeout)
                 faulthandler.enable()
 
                 old_stdout = sys.stdout
@@ -194,23 +201,23 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                         True
                     results.append(tmp_result)
 
-                    signal.alarm(0)
+                    _set_alarm(0)
                 except Exception as e:
                     sys.stdout = old_stdout
-                    signal.alarm(0)
+                    _set_alarm(0)
                     faulthandler.disable()
                     results.append(-1)
                     continue
                 finally:
                     sys.stdout = old_stdout
                 faulthandler.disable()
-                signal.alarm(0)
+                _set_alarm(0)
                 if debug:
                     print(
                         f"outputs = {output}, test outputs = {in_outs['outputs'][index]}, inputs = {inputs}, {type(inputs)}, {output == [in_outs['outputs'][index]]}")
             elif which_type == CODE_TYPE.standard_input:
                 faulthandler.enable()
-                signal.alarm(timeout)
+                _set_alarm(timeout)
                 passed = False
 
                 if isinstance(inputs, list):
@@ -221,13 +228,13 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                 with Capturing() as output:
                     try:
                         call_method(method, inputs)
-                        signal.alarm(0)
+                        _set_alarm(0)
                         passed = True
                     except Exception as e:
-                        signal.alarm(0)
+                        _set_alarm(0)
                         results.append(-1)
                         continue
-                    signal.alarm(0)
+                    _set_alarm(0)
 
                 if not passed:
                     if debug:

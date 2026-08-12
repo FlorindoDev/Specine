@@ -8,24 +8,26 @@ from tqdm import tqdm
 import multiprocessing
 import testing_util as test_util
 from datasets import load_dataset
+from model import DEFAULT_MODEL
 sys.set_int_max_str_digits(0)
 
 
-def check_correctness(in_outs, code, timeout, debug):
-    def _temp_run(in_outs, code, debug, result):
-        try:
-            if debug:
-                print(f"Running test for problem: {in_outs}")
-            result.append(test_util.run_test(in_outs, code, debug))
-            if debug:
-                print(f"Test completed with result: {result}")
-        except Exception as e:
-            if debug:
-                print(f"Error in _temp_run: {e}")
+def _run_test_in_subprocess(in_outs, code, debug, result):
+    try:
+        if debug:
+            print(f"Running test for problem: {in_outs}")
+        result.append(test_util.run_test(in_outs, code, debug))
+        if debug:
+            print(f"Test completed with result: {result}")
+    except Exception as e:
+        if debug:
+            print(f"Error in _run_test_in_subprocess: {e}")
 
+
+def check_correctness(in_outs, code, timeout, debug):
     manager = multiprocessing.Manager()
     result = manager.list()
-    p = multiprocessing.Process(target=_temp_run, args=(in_outs, code, debug, result))
+    p = multiprocessing.Process(target=_run_test_in_subprocess, args=(in_outs, code, debug, result))
     p.start()
     p.join(timeout=timeout + 1)
     if p.is_alive():
@@ -127,8 +129,12 @@ def sanitize_code(input_string, split_word):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_name", default='', type=str, help='apps, code_contests, xCodeEval')
-    parser.add_argument("--model_name", default='', type=str, required=True,
-                        help='Qwen2.5-Coder-7B-Instruct, deepseek-coder-7b-instruct-v1.5')
+    parser.add_argument(
+        "--model_name",
+        default=DEFAULT_MODEL,
+        type=str,
+        help=f"modello LLM; default: {DEFAULT_MODEL}",
+    )
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--debug", action="store_true")

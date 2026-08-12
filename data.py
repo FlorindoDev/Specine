@@ -1,28 +1,47 @@
-import os
 import json
+import os
+from pathlib import Path
+
+from benchmarks import get_benchmark
+
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+DATASET_DIR = Path(__file__).resolve().parent / "Datasets"
 
 
-def load_data(data_name):
-    test_data = []
-    for temp in open(f"./Datasets/{data_name}.jsonl", 'r', encoding='utf-8').readlines():
-        test_data.append(json.loads(temp))
+def load_data(benchmark_name):
+    benchmark = get_benchmark(benchmark_name)
+    dataset_path = DATASET_DIR / benchmark.dataset_file
+    if not dataset_path.is_file():
+        raise FileNotFoundError(
+            f"Dataset mancante: {dataset_path}. Esegui: "
+            f"python download_datasets.py --benchmark {benchmark_name}"
+        )
 
-    return test_data
+    with dataset_path.open("r", encoding="utf-8") as dataset_file:
+        return [json.loads(line) for line in dataset_file if line.strip()]
 
 
-def get_specification(args, test_case, prompt, starter_code=None, input_from=None, output_to=None, input_spec=None,
-                    output_spec=None, notes=None):
-    if args.data_name in ['apps', 'code_contests']:
+def get_evaluation_test_cases(benchmark_name, data_instance):
+    benchmark = get_benchmark(benchmark_name)
+    try:
+        return data_instance[benchmark.evaluation_field]
+    except KeyError as error:
+        raise KeyError(
+            f"Il record {data_instance.get('problem_id', '?')} non contiene "
+            f"il campo {benchmark.evaluation_field} richiesto da "
+            f"{benchmark.display_name}."
+        ) from error
+
+
+def get_specification(benchmark_name, test_case, prompt, starter_code=None):
+    benchmark = get_benchmark(benchmark_name)
+    if benchmark.dataset_family in ["apps", "code_contests"]:
         _input = ""
         data = prompt
         _input += data
-        if starter_code != None:
-            data = starter_code
-            data = "\n" + data
-            _input += data
-        else:
-            pass
+        if starter_code is not None:
+            _input += "\n" + starter_code
 
         data = test_case
         if data is None:
@@ -31,19 +50,28 @@ def get_specification(args, test_case, prompt, starter_code=None, input_from=Non
             _input += "\n\nUse Standard Input format. "
         else:
             _input += "\n\nUse Call-Based format. "
-    elif args.data_name in ['xCodeEval']:
-        _input = ""
-        data = prompt
-        _input += data
-
-        if _input is not None and output_spec is not None:
-            _input += f"\nInput Specification: {input_spec}"
-            _input += f"\nOutput Specification: {output_spec}"
-        if notes is not None:
-            _input += f"\nNotes: {notes}"
-        if input_from is not None and output_to is not None:
-            _input += f"\nTake input from {input_from} and output to {output_to}."
     return _input
+
+
+def build_specification(benchmark_name, data_instance, test_cases):
+    benchmark = get_benchmark(benchmark_name)
+    if benchmark.dataset_family == "apps":
+        prompt = data_instance["question"]
+        starter_code = data_instance["starter_code"] or None
+    elif benchmark.dataset_family == "code_contests":
+        prompt = data_instance["description"]
+        starter_code = None
+    else:
+        raise ValueError(
+            f"Famiglia dataset non supportata: {benchmark.dataset_family}"
+        )
+
+    return get_specification(
+        benchmark_name,
+        test_cases,
+        prompt,
+        starter_code,
+    )
 
 
 def to_code_prompt(specification, test_case_list):
