@@ -8,6 +8,15 @@ La baseline usa una singola chiamata al modello per generare il codice. La varia
 
 I benchmark disponibili sono esclusivamente APPS, APPS-Eval e CodeContests-Raw.
 
+## Che cosa significa baseline
+
+La **baseline** è la versione di riferimento dell'esperimento: esegue il workflow originale di Specine, nel quale il Coder Agent genera il codice con una sola chiamata al modello. Si avvia con `--variant base`; poiché `base` è il valore predefinito, il flag può essere omesso.
+
+I risultati della baseline servono come termine di confronto per misurare l'effetto della variante `A`. Per un confronto corretto bisogna usare lo stesso modello, lo stesso benchmark e lo stesso numero massimo di iterazioni. L'unica differenza deve essere il workflow del Coder Agent:
+
+- `base`: una singola generazione del codice;
+- `A`: quattro passaggi consecutivi, affidati a Product Manager, Architect, Project Manager ed Engineer.
+
 ## Preparazione dell'ambiente
 
 Eseguire tutti i comandi dalla cartella principale del progetto. È richiesto Python 3.10.
@@ -43,19 +52,19 @@ Le dipendenze installano PyTorch 2.5.1 per CUDA 12.4. Per eseguire localmente un
 
 Il modello predefinito è `deepseek-coder-7b-instruct-v1.5`. Tutti i comandi riportati sotto usano DeepSeek senza richiedere l'opzione `--model_name`.
 
-Dopo avere installato le dipendenze, scaricare il modello con questo comando.
+Dopo avere installato le dipendenze e attivato l'ambiente virtuale, scaricare il modello con lo script incluso nel progetto:
 
-```powershell
-huggingface-cli download deepseek-ai/deepseek-coder-7b-instruct-v1.5 --local-dir LLMs/deepseek-coder-7b-instruct-v1.5
+```bash
+python download_model.py
 ```
 
-In alternativa, scaricare manualmente `deepseek-ai/deepseek-coder-7b-instruct-v1.5` da Hugging Face e collocarlo in questa posizione.
+Lo script scarica l'intero repository `deepseek-ai/deepseek-coder-7b-instruct-v1.5` nella posizione attesa dal programma:
 
 ```text
 LLMs/deepseek-coder-7b-instruct-v1.5/
 ```
 
-La directory deve contenere configurazione, tokenizer e pesi del modello.
+La directory deve contenere configurazione, tokenizer e pesi del modello. Un download interrotto può essere ripreso eseguendo nuovamente lo stesso comando; i file già aggiornati non vengono scaricati di nuovo.
 
 ## File avviabili e flag
 
@@ -363,21 +372,3 @@ Results/deepseek-coder-7b-instruct-v1.5/apps/metagpt_apps_A/
 ```
 
 La console mostra Pass@1 e AvgPassRatio durante l'esecuzione. Se il processo viene interrotto, rilanciare lo stesso comando per riutilizzare gli artefatti già salvati.
-
-## Problemi comuni
-
-### Dataset mancante
-
-Eseguire il downloader con lo stesso identificatore usato per il benchmark.
-
-```powershell
-python download_datasets.py --benchmark apps
-```
-
-### Modello DeepSeek non trovato
-
-Controllare che esista `LLMs/deepseek-coder-7b-instruct-v1.5/` e che la directory contenga tutti i file scaricati da Hugging Face.
-
-### Memoria GPU insufficiente
-
-Chiudere gli altri processi che usano la GPU oppure configurare uno dei backend API supportati in `model.py`.
