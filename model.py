@@ -13,6 +13,9 @@ API_MODELS = frozenset({
 })
 SUPPORTED_MODELS = LOCAL_MODELS | API_MODELS
 DEFAULT_MODEL = 'deepseek-coder-7b-instruct-v1.5'
+DEFAULT_MAX_TOKENS = 1024
+GENERATION_TEMPERATURE = 0.8
+SAMPLING_ENABLED = True
 
 
 def load_model(model_name):
@@ -31,7 +34,7 @@ def load_model(model_name):
     return model, tokenizer
 
 
-def generate_code(args, prompt, model, tokenizer, max_new_tokens=1024):
+def generate_code(args, prompt, model, tokenizer, max_new_tokens=DEFAULT_MAX_TOKENS):
     if args.debug:
         print(prompt)
     messages = [
@@ -44,22 +47,14 @@ def generate_code(args, prompt, model, tokenizer, max_new_tokens=1024):
     )
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
-    if args.model_name == 'Qwen2.5-Coder-1.5B-Instruct':
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            temperature=0.8
-        )
-    else:
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            temperature=0.8
-        )
+    generated_ids = model.generate(
+        **model_inputs,
+        max_new_tokens=max_new_tokens,
+        pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        do_sample=SAMPLING_ENABLED,
+        temperature=GENERATION_TEMPERATURE,
+    )
 
     generated_ids = [
         output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
@@ -72,7 +67,7 @@ def generate_code(args, prompt, model, tokenizer, max_new_tokens=1024):
     return code
 
 
-def generate_text(args, prompt, model, tokenizer, max_tokens=1024):
+def generate_text(args, prompt, model, tokenizer, max_tokens=DEFAULT_MAX_TOKENS):
     if args.model_name in LOCAL_MODELS:
         return generate_code(args, prompt, model, tokenizer, max_tokens)
     if args.model_name in API_MODELS:
@@ -81,7 +76,7 @@ def generate_text(args, prompt, model, tokenizer, max_tokens=1024):
     raise ValueError(f"Unsupported model '{args.model_name}'. Supported models: {supported}")
 
 
-def generate_code_api(args, prompt, max_tokens=1024):
+def generate_code_api(args, prompt, max_tokens=DEFAULT_MAX_TOKENS):
     if args.debug:
         print(prompt)
     if args.model_name == "gpt-4o-mini-2024-07-18":
@@ -104,7 +99,7 @@ def generate_code_api(args, prompt, max_tokens=1024):
             retry -= 1
             completion = client.chat.completions.create(model=args.model_name,
                                                         messages=messages,
-                                                        temperature=0.8,
+                                                        temperature=GENERATION_TEMPERATURE,
                                                         max_tokens=max_tokens)
             code = completion.choices[0].message.content
             break

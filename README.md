@@ -372,3 +372,36 @@ Results/deepseek-coder-7b-instruct-v1.5/apps/metagpt_apps_A/
 ```
 
 La console mostra Pass@1 e AvgPassRatio durante l'esecuzione. Se il processo viene interrotto, rilanciare lo stesso comando per riutilizzare gli artefatti già salvati.
+
+## Configurazione completa del run predefinito
+
+Il comando seguente rappresenta un run predefinito su APPS. `--benchmark` e `--save_dir` sono obbligatori e quindi non possiedono un valore predefinito; tutti gli altri flag vengono omessi.
+
+```bash
+python alignment.py --benchmark apps --save_dir baseline_apps
+```
+
+| Categoria | Impostazione | Valore predefinito | Note |
+| --- | --- | --- | --- |
+| CLI | Benchmark | Nessuno | Obbligatorio; nell'esempio è `apps`. Valori: `apps`, `apps-eval`, `codecontests-raw`. |
+| CLI | Directory risultati | Nessuna | Obbligatoria tramite `--save_dir`; nell'esempio è `baseline_apps`. |
+| CLI | Modello | `deepseek-coder-7b-instruct-v1.5` | Caricato dalla directory `LLMs/deepseek-coder-7b-instruct-v1.5/`. |
+| CLI | Variante | `base` | Usa il Coder Agent originale con una sola chiamata per ogni generazione di codice. |
+| CLI | Iterazioni massime | `10` | Corrisponde a `--max_iter 10`. |
+| CLI | Debug | Disattivato | Si abilita aggiungendo `--debug`. |
+| Generazione | Token massimi del codice | `1024` | Valore dichiarato nel paper e usato dal Coder Agent. |
+| Generazione | Temperatura | `0.8` | Valore dichiarato nel paper. |
+| Generazione | Sampling | Attivato | `do_sample=True`, necessario affinché la temperatura venga applicata da Transformers. |
+| Generazione | Seed casuale | Non impostato | Due run possono produrre output differenti a causa del sampling. |
+| Generazione | Batch | `1` prompt | Il tokenizer riceve un solo prompt per chiamata. |
+| Generazione | Padding token | Token EOS del tokenizer | `pad_token_id=tokenizer.eos_token_id`. |
+| Generazione | Fine sequenza | Token EOS del tokenizer | `eos_token_id=tokenizer.eos_token_id`. |
+| Caricamento | Precisione dei pesi | Automatica | `torch_dtype="auto"` conserva la precisione indicata dal checkpoint. |
+| Caricamento | Posizionamento | Automatico | `device_map="auto"` distribuisce il modello sulle risorse disponibili. |
+| Fasi Specine | Lifting della specifica | Massimo `512` token | Limite specifico della fase interna. |
+| Fasi Specine | Selezione del disallineamento | Massimo `64` token | Limite specifico della fase interna. |
+| Fasi Specine | Regola di allineamento | Massimo `256` token | Limite specifico della fase interna. |
+| Fasi Specine | Generazione test aggiuntivi | Massimo `1024` token | Usata quando servono test generati dal modello. |
+| Output | Percorso risultati | `Results/<modello>/<benchmark>/<save_dir>/` | Per la variante `A`, al nome viene aggiunto automaticamente il suffisso `_A`. |
+
+I valori `max tokens = 1024`, `temperature = 0.8` e `N = 10` seguono la sezione 4.4 del [paper di Specine](https://arxiv.org/pdf/2509.01313). La variante `A` mantiene la stessa configurazione di generazione, ma usa quattro ruoli e limita a 512 token gli output intermedi di Product Manager, Architect e Project Manager; l'Engineer conserva il limite di 1024 token.
