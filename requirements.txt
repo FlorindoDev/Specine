@@ -10,3 +10,4 @@ accelerate==1.1.1
 pyext==0.7
 tiktoken==0.8.0
 tqdm==4.67.1
+python-dotenv==1.2.2
