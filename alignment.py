@@ -7,6 +7,7 @@ from tqdm import tqdm
 from coder_workflow import (
     ArchitectureVariant,
     CodeGenerationRequest,
+    TextGenerator,
     create_coder_workflow,
     validate_architecture_variant,
 )
@@ -18,10 +19,12 @@ from model import (
     DEFAULT_MODEL,
     LOCAL_MODELS,
     SUPPORTED_MODELS,
+    effective_model_name,
     generate_text,
     load_model,
 )
 from sanitize import sanitize_code, remove_code_blocks
+from token_usage import GenerationContext, TokenUsageRecorder
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -37,8 +40,9 @@ def save_coder_trace(path, trace):
         json.dump(trace, trace_file, ensure_ascii=False, indent=2)
 
 
-def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_result, public_test_cases, model, tokenizer,
-                   coder_workflow, optimization_list, cache_list):
+def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_result, public_test_cases,
+                   coder_workflow, optimization_list, cache_list, iteration,
+                   text_generator: TextGenerator):
     initial_mutation_instruction_list = [
         ["Specification Background",
              ["Let's provide a concise background for the provided programming specification, explaining the motivation, application context, or any domain-specific knowledge needed. Ensure the explanation is clear and accessible to developers without deep prior knowledge of the domain. This will help large language models understand it better. (Response constraints: Max 200 words, NO code)",
@@ -85,12 +89,30 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
         code_understanding_instruction += '''(6) External APIs (Optional): Lists any external APIs or library functions used by the code and describes their purpose and interactions.\n'''
         code_understanding_instruction += '''(7) Additional Explanation: Provides supplementary information, such as design intentions, potential limitations, or special considerations.\n'''
         code_understanding_prompt = f"#CODE:\n```python\n{ori_code}\n```\n\n#INSTRUCTION:\n{code_understanding_instruction}"
-        code_understanding = generate_text(args, code_understanding_prompt, model, tokenizer, 512)
+        code_understanding = text_generator(
+            code_understanding_prompt,
+            512,
+            GenerationContext(
+                agent="Lifter Agent",
+                stage="specification_lifting",
+                problem_id=problem_id,
+                iteration=iteration,
+            ),
+        )
         code_understanding = code_understanding.replace("\n\n", "\n")
 
         optimization_points_instruction = "Analyze the input programming specification and the lifted specification to identify misalignments or omissions. Select one or more ingredients to improve the input programming specification from the following ten options: ['Specification Background', 'Specification Purpose', 'Key Concepts', 'Input Requirement', 'Output Requirement', 'Examples with Explanations', 'Edge/Corner Cases', 'APIs', 'Error Handling Requirements']. Respond with a SORTED list by importance, e.g., ['Output Requirement', 'Specification Purpose', 'Examples with Explanations']. (Response constraints: Max 50 words, NO code)"
         optimization_points_prompt = f"{ori_specification}\n\n#INCORRECT GENERATED CODE:\n```python\n{ori_code}\n```\n\n#LIFTED SPECIFICATION OF INCORRECT GENERATED CODE:\n```plaintext\n{code_understanding}\n```\n\n#INSTRUCTION:\n{optimization_points_instruction}"
-        optimization_points = generate_text(args, optimization_points_prompt, model, tokenizer, 64)
+        optimization_points = text_generator(
+            optimization_points_prompt,
+            64,
+            GenerationContext(
+                agent="Aligner Agent",
+                stage="alignment_selection",
+                problem_id=problem_id,
+                iteration=iteration,
+            ),
+        )
         cache_list[ori_specification] = optimization_points
 
     optimization_points_list = []
@@ -116,7 +138,16 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
 
     new_specification = ori_specification.replace('\n\n\n\n', '\n').replace('\n\n\n', '\n').strip()
     optimization_rule_prompt = f"{new_specification}\n\n#INSTRUCTION:\n{optimization_points_list[0][1][0]}"
-    optimization_rule = generate_text(args, optimization_rule_prompt, model, tokenizer, 256)
+    optimization_rule = text_generator(
+        optimization_rule_prompt,
+        256,
+        GenerationContext(
+            agent="Aligner Agent",
+            stage="alignment_rule",
+            problem_id=problem_id,
+            iteration=iteration,
+        ),
+    )
     optimization_rule = remove_code_blocks(optimization_rule).replace('\n\n', '\n')
     new_specification += f"\n\n#{optimization_points_list[0][0].upper()}:\n```plaintext\n{optimization_rule}\n```"
 
@@ -128,7 +159,15 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
         "Please provide a self-contained Python script that solves the above programming specification in a markdown code block (without text and test cases):"
     new_prompt += "\n\n#CODE:\n```python\n\n```\n"
 
-    coder_result = coder_workflow.generate(CodeGenerationRequest(new_specification, new_prompt))
+    coder_result = coder_workflow.generate(
+        CodeGenerationRequest(
+            specification=new_specification,
+            code_prompt=new_prompt,
+            problem_id=problem_id,
+            iteration=iteration,
+            stage="aligned_code",
+        )
+    )
     new_code = coder_result.code
     new_code = sanitize_code(new_code, ["```python", "```"])
     _, new_test_result = eval_code(args, public_test_cases, new_code)
@@ -187,16 +226,32 @@ def alignment():
             f"choose one of: {', '.join(sorted(SUPPORTED_MODELS))}"
         )
 
-    coder_workflow = create_coder_workflow(
-        args.variant,
-        lambda prompt, max_tokens: generate_text(
+    run_result_dir = (
+        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}'
+    )
+    token_usage_recorder = TokenUsageRecorder(
+        output_dir=run_result_dir,
+        benchmark=args.benchmark,
+        model=effective_model_name(args.model_name),
+        variant=args.variant.value,
+    )
+
+    def tracked_generate(
+        prompt: str,
+        max_tokens: int,
+        context: GenerationContext,
+    ) -> str:
+        return generate_text(
             args,
             prompt,
             model,
             tokenizer,
             max_tokens,
-        ),
-    )
+            token_usage_recorder,
+            context,
+        )
+
+    coder_workflow = create_coder_workflow(args.variant, tracked_generate)
     initial_run_name = "test" if args.variant == ArchitectureVariant.BASE else f"test_{args.variant.value}"
     initial_result_dir = f'./Results/{args.model_name}/{args.data_name}/{initial_run_name}'
 
@@ -223,7 +278,15 @@ def alignment():
             )
             ori_prompt = to_code_prompt(ori_specification, all_test_cases)
 
-            coder_result = coder_workflow.generate(CodeGenerationRequest(ori_specification, ori_prompt))
+            coder_result = coder_workflow.generate(
+                CodeGenerationRequest(
+                    specification=ori_specification,
+                    code_prompt=ori_prompt,
+                    problem_id=problem_id,
+                    iteration=None,
+                    stage="initial_code",
+                )
+            )
             ori_code = coder_result.code
             if ori_code is None:
                 ori_code = ''
@@ -344,8 +407,15 @@ def alignment():
             generated_test_cases_prompt += f"\n(3) To assess the function's performance and scalability with large data samples."
             generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
             generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            generated_test_cases_ori = generate_text(
-                args, generated_test_cases_prompt, model, tokenizer, 1024
+            generated_test_cases_ori = tracked_generate(
+                generated_test_cases_prompt,
+                1024,
+                GenerationContext(
+                    agent="Tester Agent",
+                    stage="generated_tests",
+                    problem_id=problem_id,
+                    iteration=None,
+                ),
             )
 
             try:
@@ -371,8 +441,15 @@ def alignment():
             generated_test_cases_prompt += f"\n(3) To assess the function’s performance and scalability with large data samples."
             generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
             generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            generated_test_cases_ori = generate_text(
-                args, generated_test_cases_prompt, model, tokenizer, 1024
+            generated_test_cases_ori = tracked_generate(
+                generated_test_cases_prompt,
+                1024,
+                GenerationContext(
+                    agent="Tester Agent",
+                    stage="generated_tests",
+                    problem_id=problem_id,
+                    iteration=None,
+                ),
             )
 
             try:
@@ -445,7 +522,7 @@ def alignment():
             else:
                 new_specification, new_code, new_test_result, new_optimization, cache_list, new_coder_trace = \
                     alignment_rule(args, problem_id, best_specification, best_code, best_test_result, public_test_cases,
-                                  model, tokenizer, coder_workflow, optimization_list, cache_list)
+                                  coder_workflow, optimization_list, cache_list, iter_n, tracked_generate)
                 optimization_list.append(new_optimization)
                 new_code = sanitize_code(new_code, ["```python", "```"])
                 if len(generated_test_cases["inputs"]):
@@ -509,6 +586,9 @@ def alignment():
             new_apr = round(np.average(list(new_test_results[iter_n].values())) * 100, 2)
             print(f">> ({args.model_name}, {args.data_name}-{index + 1}/{len(test_data)}, iter={iter_n})        Pass@1: {new_pass1}%, AvgPassRatio: {new_apr}%")
         print('*' * 40)
+
+    print(f"Token usage events: {token_usage_recorder.events_path}")
+    print(f"Token usage summary: {token_usage_recorder.summary_path}")
 
 
 if __name__ == '__main__':

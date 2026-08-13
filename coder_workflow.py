@@ -2,8 +2,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
 
+from token_usage import GenerationContext
 
-TextGenerator = Callable[[str, int], str]
+
+TextGenerator = Callable[[str, int, GenerationContext], str]
 
 
 class ArchitectureVariant(str, Enum):
@@ -42,6 +44,9 @@ class RoleArtifact:
 class CodeGenerationRequest:
     specification: str
     code_prompt: str
+    problem_id: str | int
+    iteration: int | None
+    stage: str
 
 
 @dataclass(frozen=True)
@@ -62,7 +67,7 @@ class CodeGenerationResult:
 
 class CoderWorkflow(Protocol):
     def generate(self, request: CodeGenerationRequest) -> CodeGenerationResult:
-        pass
+        ...
 
 
 class DirectCoderWorkflow:
@@ -70,7 +75,13 @@ class DirectCoderWorkflow:
         self._generate_text = generate_text
 
     def generate(self, request: CodeGenerationRequest) -> CodeGenerationResult:
-        code = self._generate_text(request.code_prompt, 1024)
+        context = GenerationContext(
+            agent="Coder Agent",
+            stage=request.stage,
+            problem_id=request.problem_id,
+            iteration=request.iteration,
+        )
+        code = self._generate_text(request.code_prompt, 1024, context)
         return CodeGenerationResult(workflow="direct", code=code or "")
 
 
@@ -95,6 +106,7 @@ class MetaGPTCoderWorkflow:
             ),
             specification=request.specification,
             artifacts=artifacts,
+            request=request,
         )
         artifacts.append(RoleArtifact("Product Manager", prd))
 
@@ -107,6 +119,7 @@ class MetaGPTCoderWorkflow:
             ),
             specification=request.specification,
             artifacts=artifacts,
+            request=request,
         )
         artifacts.append(RoleArtifact("Architect", architecture))
 
@@ -119,6 +132,7 @@ class MetaGPTCoderWorkflow:
             ),
             specification=request.specification,
             artifacts=artifacts,
+            request=request,
         )
         artifacts.append(RoleArtifact("Project Manager", tasks))
 
@@ -131,6 +145,7 @@ class MetaGPTCoderWorkflow:
             ),
             specification=request.specification,
             artifacts=artifacts,
+            request=request,
             max_tokens=self._CODE_TOKEN_LIMIT,
         )
         artifacts.append(RoleArtifact("Engineer", code))
@@ -147,6 +162,7 @@ class MetaGPTCoderWorkflow:
         instruction: str,
         specification: str,
         artifacts: list[RoleArtifact],
+        request: CodeGenerationRequest,
         max_tokens: int = _ROLE_TOKEN_LIMIT,
     ) -> str:
         context = "\n\n".join(
@@ -160,7 +176,17 @@ class MetaGPTCoderWorkflow:
         if context:
             prompt_parts.append(context)
         prompt_parts.append(f"#INSTRUCTION:\n{instruction}")
-        response = self._generate_text("\n\n".join(prompt_parts), max_tokens)
+        generation_context = GenerationContext(
+            agent=role,
+            stage=request.stage,
+            problem_id=request.problem_id,
+            iteration=request.iteration,
+        )
+        response = self._generate_text(
+            "\n\n".join(prompt_parts),
+            max_tokens,
+            generation_context,
+        )
         return response or ""
 
 
