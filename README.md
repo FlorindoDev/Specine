@@ -1,21 +1,44 @@
 # Specine con Coder MetaGPT
 
+## Indice
+
+- [Obiettivo](#obiettivo)
+- [Modalità di esecuzione](#modalità-di-esecuzione)
+  - [Base (baseline)](#avvio-della-baseline-base)
+  - [Variante A — MetaGPT nel Coder Agent](#avvio-della-variante-a)
+  - [Variante B — Skill nel Coder e nel Tester Agent](#varianti-b-e-c)
+  - [Variante C — MetaGPT e Skill](#varianti-b-e-c)
+- [Preparazione dell'ambiente](#preparazione-dellambiente)
+- [Modello predefinito](#modello-predefinito)
+- [API compatibili](#api-compatibili)
+- [File avviabili e flag](#file-avviabili-e-flag)
+- [Benchmark disponibili](#benchmark-disponibili)
+- [Download dei dataset](#download-dei-dataset)
+- [Esecuzione rapida](#esecuzione-rapida)
+- [Risultati](#risultati)
+- [Configurazione completa del run predefinito](#configurazione-completa-del-run-predefinito)
+
+![Panoramica delle varianti architetturali di Specine](Figures/specine-architecture-variants.png)
+
 ## Obiettivo
 
-Questo fork confronta la generazione originale di Specine con una variante che inserisce un workflow ispirato a MetaGPT nel Coder Agent.
+Questo fork confronta la generazione originale di Specine con varianti che evolvono il workflow del Coder Agent e del Tester Agent.
 
-La baseline usa una singola chiamata al modello per generare il codice. La variante `A` usa in sequenza Product Manager, Architect, Project Manager ed Engineer. Gli altri componenti di Specine restano invariati.
+La [modalità Base](#avvio-della-baseline-base) usa una singola chiamata al modello per generare il codice. La [variante A](#avvio-della-variante-a) usa in sequenza Product Manager, Architect, Project Manager ed Engineer. Le varianti [B e C](#varianti-b-e-c) descrivono le estensioni basate su Skill previste dall'architettura.
 
 I benchmark disponibili sono esclusivamente APPS, APPS-Eval e CodeContests-Raw.
 
-## Che cosa significa baseline
+## Modalità di esecuzione
 
-La **baseline** è la versione di riferimento dell'esperimento: esegue il workflow originale di Specine, nel quale il Coder Agent genera il codice con una sola chiamata al modello. Si avvia con `--variant base`; poiché `base` è il valore predefinito, il flag può essere omesso.
+La **Base (baseline)** è la versione di riferimento: esegue il workflow originale di Specine, nel quale il Coder Agent genera il codice con una sola chiamata al modello. Si avvia con `--variant base`; poiché `base` è il valore predefinito, il flag può essere omesso. Vedere [Avvio della baseline](#avvio-della-baseline-base).
 
-I risultati della baseline servono come termine di confronto per misurare l'effetto della variante `A`. Per un confronto corretto bisogna usare lo stesso modello, lo stesso benchmark e lo stesso numero massimo di iterazioni. L'unica differenza deve essere il workflow del Coder Agent:
+La **variante A** mantiene il Tester Agent e il processo di allineamento di Specine invariati, ma sostituisce la generazione diretta del Coder Agent con un sotto-workflow MetaGPT: Product Manager, Architect, Project Manager ed Engineer lavorano in sequenza prima della generazione del codice. Vedere [Avvio della variante A](#avvio-della-variante-a).
 
-- `base`: una singola generazione del codice;
-- `A`: quattro passaggi consecutivi, affidati a Product Manager, Architect, Project Manager ed Engineer.
+La **variante B** prevede l'uso di una Coder Skill e di una Tester Skill: il Coder Agent affronta analisi della specifica, casi limite, progettazione, gestione degli errori e revisione; il Tester Agent estrae requisiti, casi base/boundary e avversariali, quindi verifica l'output. Vedere [Varianti B e C](#varianti-b-e-c).
+
+La **variante C** combina il sotto-workflow MetaGPT della variante A con le Skill previste dalla variante B: l'Engineer usa una Coder Skill integrata e il Tester Agent usa la Tester Skill. Vedere [Varianti B e C](#varianti-b-e-c).
+
+I risultati della Base servono come termine di confronto per misurare l'effetto delle altre modalità. Per un confronto corretto bisogna usare lo stesso modello, lo stesso benchmark e lo stesso numero massimo di iterazioni; deve cambiare solo il workflow scelto.
 
 ## Preparazione dell'ambiente
 
@@ -66,6 +89,40 @@ LLMs/deepseek-coder-7b-instruct-v1.5/
 
 La directory deve contenere configurazione, tokenizer e pesi del modello. Un download interrotto può essere ripreso eseguendo nuovamente lo stesso comando; i file già aggiornati non vengono scaricati di nuovo.
 
+Qwen2.5-Coder-7B-Instruct può essere eseguito localmente con il nome `Qwen2.5-Coder-7B-Instruct` oppure tramite l'API compatibile OpenAI di Alibaba Cloud Model Studio con il nome `qwen2.5-coder-7b-instruct`. Per usare l'API impostare la chiave; l'endpoint internazionale è già configurato e può essere sostituito tramite `DASHSCOPE_BASE_URL`.
+
+```powershell
+$env:DASHSCOPE_API_KEY="<api-key>"
+python alignment.py --model_name qwen2.5-coder-7b-instruct --benchmark apps --save_dir qwen_api_apps
+```
+
+## API compatibili
+
+Il progetto usa il client Python OpenAI e supporta questi provider:
+
+| Provider | Valore `--model_name` | Variabili richieste | Endpoint predefinito |
+| --- | --- | --- | --- |
+| OpenAI | `gpt-4o-mini-2024-07-18` | `OPENAI_API_KEY` | Endpoint ufficiale del client OpenAI |
+| Google Gemini | `gemini-1.5-flash-002` | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
+| Alibaba Cloud Model Studio / DashScope | `qwen2.5-coder-7b-instruct` | `DASHSCOPE_API_KEY` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | `https://openrouter.ai/api/v1` |
+
+Le variabili possono essere definite nel sistema oppure in un file `.env` nella directory principale. Copiare `.env.example` in `.env` e compilare solo il provider usato.
+
+Con OpenRouter, `OPENROUTER_MODEL` accetta qualsiasi slug testuale disponibile nel [catalogo OpenRouter](https://openrouter.ai/models) e compatibile con Chat Completions. Esempio:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=qwen/qwen-2.5-coder-32b-instruct
+OPENROUTER_APP_TITLE=Specine
+```
+
+```powershell
+python alignment.py --model_name openrouter --benchmark apps --save_dir openrouter_apps
+```
+
+`OPENROUTER_HTTP_REFERER` e `OPENROUTER_APP_TITLE` sono opzionali. `OPENROUTER_BASE_URL`, `DASHSCOPE_BASE_URL`, `GEMINI_BASE_URL` e `OPENAI_BASE_URL` permettono di sostituire gli endpoint predefiniti. OpenRouter è compatibile con il client OpenAI usato dal progetto e restituisce `prompt_tokens` e `completion_tokens`, quindi il conteggio token resta attivo. Vedere la [documentazione OpenRouter per OpenAI SDK](https://openrouter.ai/docs/guides/community/openai-sdk).
+
 ## File avviabili e flag
 
 Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datasets.py` per scaricare i dataset. `eval_code.py` conserva un entry point legacy: la valutazione usata dal flusso corrente viene già eseguita internamente da `alignment.py`, quindi non è necessario avviarlo separatamente.
@@ -105,7 +162,7 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datas
       <td><code>--model_name</code></td>
       <td>No</td>
       <td><code>deepseek-coder-7b-instruct-v1.5</code></td>
-      <td><code>deepseek-coder-7b-instruct-v1.5</code>, <code>Qwen2.5-Coder-7B-Instruct</code>, <code>gpt-4o-mini-2024-07-18</code>, <code>gemini-1.5-flash-002</code></td>
+      <td><code>deepseek-coder-7b-instruct-v1.5</code>, <code>Qwen2.5-Coder-7B-Instruct</code> (locale), <code>qwen2.5-coder-7b-instruct</code> (API), <code>gpt-4o-mini-2024-07-18</code>, <code>gemini-1.5-flash-002</code>, <code>openrouter</code></td>
       <td>Seleziona il modello locale o il backend API.</td>
     </tr>
     <tr>
@@ -303,7 +360,7 @@ Un dataset valido già presente non viene sovrascritto. Per sostituire volontari
 python download_datasets.py --benchmark apps --force
 ```
 
-## Avvio della baseline
+## Avvio della baseline (Base)
 
 La baseline è la modalità predefinita. I comandi seguenti usano DeepSeek e un massimo di 10 iterazioni perché `--model_name`, `--variant` e `--max_iter` non vengono specificati.
 
@@ -349,6 +406,12 @@ python alignment.py --variant A --benchmark codecontests-raw --save_dir metagpt_
 
 La variante `A` esegue quattro chiamate al modello per ogni generazione del Coder Agent. Richiede quindi più tempo della baseline. Il modello viene caricato una sola volta.
 
+## Varianti B e C
+
+La variante `B` è progettata per usare una Coder Skill e una Tester Skill, mentre la variante `C` combina queste Skill con il sotto-workflow MetaGPT del Coder Agent. Il diagramma all'inizio del README mostra i due flussi previsti.
+
+Al momento queste due varianti sono riservate per l'implementazione futura: i valori `--variant B` e `--variant C` sono riconosciuti dalla CLI, ma l'esecuzione termina intenzionalmente con un errore. Per eseguire i benchmark usare quindi la [Base](#avvio-della-baseline-base) o la [variante A](#avvio-della-variante-a).
+
 ## Esecuzione rapida
 
 Per controllare la configurazione con una sola iterazione usare questo comando.
@@ -372,6 +435,13 @@ Results/deepseek-coder-7b-instruct-v1.5/apps/metagpt_apps_A/
 ```
 
 La console mostra Pass@1 e AvgPassRatio durante l'esecuzione. Se il processo viene interrotto, rilanciare lo stesso comando per riutilizzare gli artefatti già salvati.
+
+Ogni chiamata al modello viene registrata nella directory del run:
+
+- `token_usage.jsonl`: un evento per chiamata, con benchmark, problema, iterazione, fase, agente, token di input, token di output e totale;
+- `token_usage_summary.json`: totale del benchmark e aggregazioni per agente, iterazione e fase.
+
+Per i modelli locali il conteggio deriva dagli ID prodotti dal tokenizer del modello. Per le API viene usato il campo `usage` restituito dal provider. Solo se il provider non restituisce `usage`, il conteggio viene stimato e l'evento contiene `estimated: true` e la sorgente della stima. Le chiamate evitate grazie alla cache non consumano token e non producono nuovi eventi; rilanciando lo stesso run, il riepilogo viene ricostruito dagli eventi già salvati.
 
 ## Configurazione completa del run predefinito
 
@@ -403,5 +473,6 @@ python alignment.py --benchmark apps --save_dir baseline_apps
 | Fasi Specine | Regola di allineamento | Massimo `256` token | Limite specifico della fase interna. |
 | Fasi Specine | Generazione test aggiuntivi | Massimo `1024` token | Usata quando servono test generati dal modello. |
 | Output | Percorso risultati | `Results/<modello>/<benchmark>/<save_dir>/` | Per la variante `A`, al nome viene aggiunto automaticamente il suffisso `_A`. |
+| Output | Consumo token | Registrazione automatica | Salva ogni chiamata LLM e aggrega input/output per agente, iterazione e fase. |
 
 I valori `max tokens = 1024`, `temperature = 0.8` e `N = 10` seguono la sezione 4.4 del [paper di Specine](https://arxiv.org/pdf/2509.01313). La variante `A` mantiene la stessa configurazione di generazione, ma usa quattro ruoli e limita a 512 token gli output intermedi di Product Manager, Architect e Project Manager; l'Engineer conserva il limite di 1024 token.
