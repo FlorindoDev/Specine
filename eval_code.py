@@ -3,6 +3,8 @@ import re
 import sys
 import json
 import argparse
+from typing import Any
+
 import numpy as np
 from tqdm import tqdm
 import multiprocessing
@@ -79,16 +81,16 @@ def eval_code_new(args, all_in_outs, code, TIMEOUT=15):
     return results, np.average(results)
 
 
-def load_data(data_name):
+def load_data(data_name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if data_name == 'apps':
         ds_train = load_dataset("./Datasets/apps", split="train", trust_remote_code=True)
         ds_test = load_dataset("./Datasets/apps", split="test", trust_remote_code=True)
         train_data = []
         test_data = []
         for temp in ds_train:
-            train_data.append(temp)
+            train_data.append(dict(temp))
         for temp in ds_test:
-            test_data.append(temp)
+            test_data.append(dict(temp))
         return train_data, test_data
     elif data_name == 'code_contests':
         ds_train = load_dataset("./Datasets/code_contests", split="train", trust_remote_code=True)
@@ -96,9 +98,11 @@ def load_data(data_name):
         train_data = []
         test_data = []
         for i, temp in enumerate(ds_train):
+            temp = dict(temp)
             temp['problem_id'] = i
             train_data.append(temp)
         for i, temp in enumerate(ds_test):
+            temp = dict(temp)
             temp['problem_id'] = i
             test_data.append(temp)
         return train_data, test_data
@@ -110,6 +114,7 @@ def load_data(data_name):
         for temp in open("./Datasets/xCodeEval/program_synthesis/test/test.jsonl", 'r', encoding='utf-8').readlines():
             test_data.append(json.loads(temp))
         return train_data, test_data
+    raise ValueError(f"Dataset non supportato: {data_name}")
 
 
 def sanitize_code(input_string, split_word):
@@ -128,7 +133,12 @@ def sanitize_code(input_string, split_word):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_name", default='', type=str, help='apps, code_contests, xCodeEval')
+    parser.add_argument(
+        "--data_name",
+        choices=("apps", "code_contests", "xCodeEval"),
+        required=True,
+        help='apps, code_contests, xCodeEval',
+    )
     parser.add_argument(
         "--model_name",
         default=DEFAULT_MODEL,
@@ -161,10 +171,11 @@ def main():
                     os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{problem_id}_ids.npy')):
                 continue
 
+            generated_code = ""
+            test_case_list: dict[str, Any] = {'inputs': [], 'outputs': []}
             if args.data_name == 'apps':
                 generated_code = open(f'./Results/{args.model_name}/{args.data_name}/{data_mode}/{problem_id}_code', 'r').read()
                 generated_code = sanitize_code(generated_code, ["```python", "```"])
-                generated_code_list = [generated_code]
 
                 if data_instance['input_output'] == '' or data_instance['input_output'] is None:
                     test_case_list = {'inputs': [], 'outputs': []}
@@ -176,7 +187,6 @@ def main():
             elif args.data_name == 'code_contests':
                 generated_code = open(f'./Results/{args.model_name}/{args.data_name}/{data_mode}/{problem_id}_code', 'r').read()
                 generated_code = sanitize_code(generated_code, ["```python", "```"])
-                generated_code_list = [generated_code]
 
                 private_test_cases = data_instance['private_tests']
                 generated_test_cases = data_instance['generated_tests']
@@ -193,7 +203,6 @@ def main():
             elif args.data_name == 'xCodeEval':
                 generated_code = open(f'./Results/{args.model_name}/{args.data_name}/{data_mode}/{problem_id}_code', 'r').read()
                 generated_code = sanitize_code(generated_code, ["```python", "```"])
-                generated_code_list = [generated_code]
 
                 sample_inputs = data_instance['sample_inputs']
                 sample_outputs = data_instance['sample_outputs']
@@ -207,8 +216,10 @@ def main():
                     test_case_list['outputs'].append(unittest[i_u]['output'])
                 if len(test_case_list['inputs']) == 0:
                     continue
+            else:
+                raise ValueError(f"Dataset non supportato: {args.data_name}")
 
-            res, pass_ratio = eval_code(args, test_case_list, generated_code_list[0])
+            res, pass_ratio = eval_code(args, test_case_list, generated_code)
             all_pass_ratio.append(pass_ratio)
             open(f'./Results/{args.model_name}/{args.data_name}/{data_mode}/{problem_id}_test_result', 'w', encoding='utf-8').write(str(pass_ratio))
 

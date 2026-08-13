@@ -1,4 +1,5 @@
 import io
+import importlib
 import sys
 import signal
 import platform
@@ -7,6 +8,8 @@ import faulthandler
 from enum import Enum
 from io import StringIO
 from datetime import datetime
+from types import ModuleType
+from typing import Any, cast
 from pyext import RuntimeModule
 from unittest.mock import patch, mock_open
 
@@ -24,21 +27,26 @@ def timeout_handler(signum, frame):
     raise TimeoutException
 
 
-_HAS_SIGALRM = hasattr(signal, "SIGALRM")
-if _HAS_SIGALRM:
-    signal.signal(signal.SIGALRM, timeout_handler)
+_SIGALRM = getattr(signal, "SIGALRM", None)
+_ALARM = getattr(signal, "alarm", None)
+if _SIGALRM is not None:
+    signal.signal(_SIGALRM, timeout_handler)
 
 
 def _set_alarm(seconds):
-    if _HAS_SIGALRM:
-        signal.alarm(seconds)
+    if _ALARM is not None:
+        _ALARM(seconds)
 
 
-class Capturing(list):
+class _NonClosingStringIO(StringIO):
+    def close(self) -> None:
+        pass
+
+
+class Capturing(list[Any]):
     def __enter__(self):
         self._stdout = sys.stdout
-        sys.stdout = self._stringio = StringIO()
-        self._stringio.close = lambda x: 1
+        sys.stdout = self._stringio = _NonClosingStringIO()
         return self
 
     def __exit__(self, *args):
@@ -47,7 +55,7 @@ class Capturing(list):
         sys.stdout = self._stdout
 
 
-def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
+def run_test(in_outs, code: str | None = None, debug: bool = False, timeout=5):
     if debug:
         print(f"start = {datetime.now().time()}")
 
@@ -69,6 +77,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
         reliability_guard()
 
         results = []
+        tmp: Any | None = None
         sol = "import sys\nimport time\nimport itertools\nfrom itertools import accumulate, product, permutations, combinations\nimport collections\nfrom collections import Counter, OrderedDict, deque, defaultdict, ChainMap\nfrom functools import lru_cache\nimport math\nfrom math import sqrt, sin, cos, tan, ceil, fabs, floor, gcd, exp, log, log2\nimport fractions\nfrom typing import List, Tuple\nimport numpy as np\nimport random\nimport heapq\nfrom heapq import *\n"
         if debug:
             print(f"loading test code = {datetime.now().time()}")
@@ -148,6 +157,10 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
         if debug:
             print(f"get method = {datetime.now().time()}")
 
+        if tmp is None or method_name is None:
+            results.append(-2)
+            return results
+
         try:
             method = getattr(tmp, method_name)
         except:
@@ -161,17 +174,17 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                 if isinstance(inputs[0], dict):
                     inputs = [{int(k): v for k, v in inputs[0].items()}]
             except:
-                True
+                pass
             try:
                 if isinstance(in_outs["outputs"][index], dict):
                     in_outs["outputs"][index] = [{int(k): v for k, v in in_outs["outputs"][index].items()}]
             except:
-                True
+                pass
             try:
                 if isinstance(in_outs["outputs"][index][0], dict):
                     in_outs["outputs"][index] = [{int(k): v for k, v in in_outs["outputs"][index][0].items()}]
             except:
-                True
+                pass
 
             if debug:
                 print(
@@ -198,7 +211,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                         if isinstance(output[0], tuple):
                             tmp_result = tmp_result or ([list(x) for x in output] == in_outs["outputs"][index][0])
                     except:
-                        True
+                        pass
                     results.append(tmp_result)
 
                     _set_alarm(0)
@@ -221,7 +234,7 @@ def run_test(in_outs, code: str = None, debug: bool = False, timeout=5):
                 passed = False
 
                 if isinstance(inputs, list):
-                    inputs = "\n".join(inputs)
+                    inputs = "\n".join(cast(list[str], inputs))
                 if isinstance(in_outs['outputs'][index], list):
                     in_outs['outputs'][index] = "\n".join(in_outs['outputs'][index])
 
@@ -437,68 +450,56 @@ def call_method(method, inputs):
 
 def reliability_guard(maximum_memory_bytes=None):
     if maximum_memory_bytes is not None:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
-        resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
+        resource_module = importlib.import_module("resource")
+        setrlimit = getattr(resource_module, "setrlimit")
+        setrlimit(
+            getattr(resource_module, "RLIMIT_AS"),
+            (maximum_memory_bytes, maximum_memory_bytes),
+        )
+        setrlimit(
+            getattr(resource_module, "RLIMIT_DATA"),
+            (maximum_memory_bytes, maximum_memory_bytes),
+        )
         if not platform.uname().system == "Darwin":
-            resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+            setrlimit(
+                getattr(resource_module, "RLIMIT_STACK"),
+                (maximum_memory_bytes, maximum_memory_bytes),
+            )
 
     faulthandler.disable()
 
     import builtins
 
-    builtins.exit = None
-    builtins.quit = None
+    setattr(builtins, "exit", None)
+    setattr(builtins, "quit", None)
 
     import os
 
     os.environ["OMP_NUM_THREADS"] = "1"
 
-    os.kill = None
-    os.system = None
-    os.putenv = None
-    os.remove = None
-    os.removedirs = None
-    os.rmdir = None
-    os.fchdir = None
-    os.setuid = None
-    os.fork = None
-    os.forkpty = None
-    os.killpg = None
-    os.rename = None
-    os.renames = None
-    os.truncate = None
-    os.replace = None
-    os.unlink = None
-    os.fchmod = None
-    os.fchown = None
-    os.chmod = None
-    os.chown = None
-    os.chroot = None
-    os.fchdir = None
-    os.lchflags = None
-    os.lchmod = None
-    os.lchown = None
-    os.getcwd = None
-    os.chdir = None
+    blocked_os_functions = (
+        "kill", "system", "putenv", "remove", "removedirs", "rmdir",
+        "fchdir", "setuid", "fork", "forkpty", "killpg", "rename",
+        "renames", "truncate", "replace", "unlink", "fchmod", "fchown",
+        "chmod", "chown", "chroot", "lchflags", "lchmod", "lchown",
+        "getcwd", "chdir",
+    )
+    for function_name in blocked_os_functions:
+        setattr(os, function_name, None)
 
     import shutil
 
-    shutil.rmtree = None
-    shutil.move = None
-    shutil.chown = None
+    for function_name in ("rmtree", "move", "chown"):
+        setattr(shutil, function_name, None)
 
     import subprocess
 
-    subprocess.Popen = None
+    setattr(subprocess, "Popen", None)
 
-    __builtins__["help"] = None
+    setattr(builtins, "help", None)
 
     import sys
 
-    sys.modules["ipdb"] = None
-    sys.modules["joblib"] = None
-    sys.modules["resource"] = None
-    sys.modules["psutil"] = None
-    sys.modules["tkinter"] = None
+    blocked_modules = cast(dict[str, ModuleType | None], sys.modules)
+    for module_name in ("ipdb", "joblib", "resource", "psutil", "tkinter"):
+        blocked_modules[module_name] = None

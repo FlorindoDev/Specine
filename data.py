@@ -36,20 +36,24 @@ def get_evaluation_test_cases(benchmark_name, data_instance):
 
 def get_specification(benchmark_name, test_case, prompt, starter_code=None):
     benchmark = get_benchmark(benchmark_name)
-    if benchmark.dataset_family in ["apps", "code_contests"]:
-        _input = ""
-        data = prompt
-        _input += data
-        if starter_code is not None:
-            _input += "\n" + starter_code
+    if benchmark.dataset_family not in {"apps", "code_contests"}:
+        raise ValueError(
+            f"Famiglia dataset non supportata: {benchmark.dataset_family}"
+        )
 
-        data = test_case
-        if data is None:
-            _input += "\n\n"
-        elif not data.get("fn_name"):
-            _input += "\n\nUse Standard Input format. "
-        else:
-            _input += "\n\nUse Call-Based format. "
+    _input = ""
+    data = prompt
+    _input += data
+    if starter_code is not None:
+        _input += "\n" + starter_code
+
+    data = test_case
+    if data is None:
+        _input += "\n\n"
+    elif not data.get("fn_name"):
+        _input += "\n\nUse Standard Input format. "
+    else:
+        _input += "\n\nUse Call-Based format. "
     return _input
 
 
