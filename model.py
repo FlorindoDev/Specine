@@ -38,11 +38,6 @@ API_MODEL_CONFIGS = {
         base_url_env='GEMINI_BASE_URL',
         default_base_url='https://generativelanguage.googleapis.com/v1beta/openai/',
     ),
-    'qwen2.5-coder-7b-instruct': ApiModelConfig(
-        api_key_env='DASHSCOPE_API_KEY',
-        base_url_env='DASHSCOPE_BASE_URL',
-        default_base_url='https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
-    ),
     'openrouter': ApiModelConfig(
         api_key_env='OPENROUTER_API_KEY',
         base_url_env='OPENROUTER_BASE_URL',

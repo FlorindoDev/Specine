@@ -89,11 +89,12 @@ LLMs/deepseek-coder-7b-instruct-v1.5/
 
 La directory deve contenere configurazione, tokenizer e pesi del modello. Un download interrotto può essere ripreso eseguendo nuovamente lo stesso comando; i file già aggiornati non vengono scaricati di nuovo.
 
-Qwen2.5-Coder-7B-Instruct può essere eseguito localmente con il nome `Qwen2.5-Coder-7B-Instruct` oppure tramite l'API compatibile OpenAI di Alibaba Cloud Model Studio con il nome `qwen2.5-coder-7b-instruct`. Per usare l'API impostare la chiave; l'endpoint internazionale è già configurato e può essere sostituito tramite `DASHSCOPE_BASE_URL`.
+Qwen2.5-Coder-7B-Instruct può essere eseguito localmente con il nome `Qwen2.5-Coder-7B-Instruct` oppure tramite OpenRouter. Per usarlo via API, configurare `OPENROUTER_API_KEY` e impostare lo slug Qwen in `OPENROUTER_MODEL`.
 
 ```powershell
-$env:DASHSCOPE_API_KEY="<api-key>"
-python alignment.py --model_name qwen2.5-coder-7b-instruct --benchmark apps --save_dir qwen_api_apps
+$env:OPENROUTER_API_KEY="<api-key>"
+$env:OPENROUTER_MODEL="qwen/qwen2.5-coder-7b-instruct"
+python alignment.py --model_name openrouter --benchmark apps --save_dir qwen_openrouter_apps
 ```
 
 ## API compatibili
@@ -104,7 +105,6 @@ Il progetto usa il client Python OpenAI e supporta questi provider:
 | --- | --- | --- | --- |
 | OpenAI | `gpt-4o-mini-2024-07-18` | `OPENAI_API_KEY` | Endpoint ufficiale del client OpenAI |
 | Google Gemini | `gemini-1.5-flash-002` | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
-| Alibaba Cloud Model Studio / DashScope | `qwen2.5-coder-7b-instruct` | `DASHSCOPE_API_KEY` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | `https://openrouter.ai/api/v1` |
 
 Le variabili possono essere definite nel sistema oppure in un file `.env` nella directory principale. Copiare `.env.example` in `.env` e compilare solo il provider usato.
@@ -113,7 +113,7 @@ Con OpenRouter, `OPENROUTER_MODEL` accetta qualsiasi slug testuale disponibile n
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=qwen/qwen-2.5-coder-32b-instruct
+OPENROUTER_MODEL=qwen/qwen2.5-coder-7b-instruct
 OPENROUTER_APP_TITLE=Specine
 ```
 
@@ -121,7 +121,7 @@ OPENROUTER_APP_TITLE=Specine
 python alignment.py --model_name openrouter --benchmark apps --save_dir openrouter_apps
 ```
 
-`OPENROUTER_HTTP_REFERER` e `OPENROUTER_APP_TITLE` sono opzionali. `OPENROUTER_BASE_URL`, `DASHSCOPE_BASE_URL`, `GEMINI_BASE_URL` e `OPENAI_BASE_URL` permettono di sostituire gli endpoint predefiniti. OpenRouter è compatibile con il client OpenAI usato dal progetto e restituisce `prompt_tokens` e `completion_tokens`, quindi il conteggio token resta attivo. Vedere la [documentazione OpenRouter per OpenAI SDK](https://openrouter.ai/docs/guides/community/openai-sdk).
+`OPENROUTER_HTTP_REFERER` e `OPENROUTER_APP_TITLE` sono opzionali. `OPENROUTER_BASE_URL`, `GEMINI_BASE_URL` e `OPENAI_BASE_URL` permettono di sostituire gli endpoint predefiniti. OpenRouter è compatibile con il client OpenAI usato dal progetto e restituisce `prompt_tokens` e `completion_tokens`, quindi il conteggio token resta attivo. Vedere la [documentazione OpenRouter per OpenAI SDK](https://openrouter.ai/docs/guides/community/openai-sdk).
 
 ## File avviabili e flag
 
@@ -162,7 +162,7 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datas
       <td><code>--model_name</code></td>
       <td>No</td>
       <td><code>deepseek-coder-7b-instruct-v1.5</code></td>
-      <td><code>deepseek-coder-7b-instruct-v1.5</code>, <code>Qwen2.5-Coder-7B-Instruct</code> (locale), <code>qwen2.5-coder-7b-instruct</code> (API), <code>gpt-4o-mini-2024-07-18</code>, <code>gemini-1.5-flash-002</code>, <code>openrouter</code></td>
+      <td><code>deepseek-coder-7b-instruct-v1.5</code>, <code>Qwen2.5-Coder-7B-Instruct</code> (locale), <code>gpt-4o-mini-2024-07-18</code>, <code>gemini-1.5-flash-002</code>, <code>openrouter</code></td>
       <td>Seleziona il modello locale o il backend API.</td>
     </tr>
     <tr>
@@ -441,7 +441,10 @@ Ogni chiamata al modello viene registrata nella directory del run:
 - `token_usage.jsonl`: un evento per chiamata, con benchmark, problema, iterazione, fase, agente, token di input, token di output e totale;
 - `token_usage_summary.json`: totale del benchmark e aggregazioni per agente, iterazione e fase.
 
-Per i modelli locali il conteggio deriva dagli ID prodotti dal tokenizer del modello. Per le API viene usato il campo `usage` restituito dal provider. Solo se il provider non restituisce `usage`, il conteggio viene stimato e l'evento contiene `estimated: true` e la sorgente della stima. Le chiamate evitate grazie alla cache non consumano token e non producono nuovi eventi; rilanciando lo stesso run, il riepilogo viene ricostruito dagli eventi già salvati.
+> [!note] Nota
+> **Come vengono contati i token.** Per i modelli locali, input e output sono calcolati direttamente dagli ID del tokenizer. Per le API vengono letti i valori `usage` restituiti dal provider. Se `usage` non è disponibile, il conteggio viene stimato e l'evento riporta `estimated: true` insieme al metodo usato.
+>
+> **Effetto della cache.** Quando un risultato già salvato evita una nuova chiamata al modello, non vengono consumati token e non viene creato alcun nuovo evento. Se si riprende lo stesso run, il riepilogo conserva i token delle chiamate eseguite in precedenza, mentre ogni risultato recuperato dalla cache aggiunge zero token.
 
 ## Configurazione completa del run predefinito
 

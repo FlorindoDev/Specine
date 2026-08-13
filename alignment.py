@@ -300,10 +300,10 @@ def alignment():
             save_coder_trace(initial_coder_trace_path, coder_result.to_dict())
 
         ori_test_results[problem_id] = \
-            float(open(initial_test_result_path, 'r').read())
+            float(open(initial_test_result_path, 'r', encoding='utf-8').read())
         for iter_n in range(args.max_iter):
             new_test_results[iter_n][problem_id] = \
-                float(open(initial_test_result_path, 'r').read())
+                float(open(initial_test_result_path, 'r', encoding='utf-8').read())
 
     ori_pass1 = round(list(ori_test_results.values()).count(1.0) / len(ori_test_results) * 100, 2)
     ori_apr = round(np.average(list(ori_test_results.values())) * 100, 2)
@@ -321,7 +321,7 @@ def alignment():
         if all(all_files_exist):
             print('*' * 40)
             for iter_n in range(args.max_iter):
-                new_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}','r').read())
+                new_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
                 new_test_results[iter_n][problem_id] = new_test_result_all
                 new_pass1 = round(list(new_test_results[iter_n].values()).count(1.0) / len(new_test_results[0]) * 100, 2)
                 new_apr = round(np.average(list(new_test_results[iter_n].values())) * 100, 2)
@@ -345,9 +345,9 @@ def alignment():
             initial_code_path,
             initial_test_result_path,
         )):
-            ori_prompt = open(initial_prompt_path, 'r').read()
-            ori_code = open(initial_code_path, 'r').read()
-            ori_test_result_all = float(open(initial_test_result_path, 'r').read())
+            ori_prompt = open(initial_prompt_path, 'r', encoding='utf-8').read()
+            ori_code = open(initial_code_path, 'r', encoding='utf-8').read()
+            ori_test_result_all = float(open(initial_test_result_path, 'r', encoding='utf-8').read())
             initial_coder_trace = load_coder_trace(initial_coder_trace_path)
             ori_code = sanitize_code(ori_code, ["```python", "```"])
             if ori_test_result_all == 1.0:
@@ -397,7 +397,7 @@ def alignment():
             exit()
 
         if os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case'):
-            generated_test_cases = json.loads(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'r').read())
+            generated_test_cases = json.loads(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'r', encoding='utf-8').read())
         elif len(json.dumps(public_test_cases)) < 1024:
             generated_test_cases_prompt = ori_specification
             generated_test_cases_prompt += f'\n\n#TEST CASES:\n```json\n{json.dumps(public_test_cases)}\n```'
@@ -432,7 +432,7 @@ def alignment():
                 generated_test_cases = {"inputs": [], "outputs": []}
             if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
                 os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-            open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w').write(json.dumps(generated_test_cases))
+            open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w', encoding='utf-8').write(json.dumps(generated_test_cases))
         else:
             generated_test_cases_prompt = ori_specification
             generated_test_cases_prompt += f"\n\n#INSTRUCTION:\nImplement a representative set of test cases for the above programming specification, ensure that the generated test cases are correct:"
@@ -468,7 +468,7 @@ def alignment():
 
         if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
             os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w').write(json.dumps(generated_test_cases))
+        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w', encoding='utf-8').write(json.dumps(generated_test_cases))
 
         _, ori_test_result = eval_code(args, public_test_cases, ori_code)
         if len(generated_test_cases["inputs"]):
