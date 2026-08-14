@@ -1,37 +1,15 @@
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable, Protocol
 
 from token_usage import GenerationContext
+from workflow_variants import (
+    ArchitectureVariant,
+    VariantCapabilities,
+    get_variant_capabilities,
+)
 
 
 TextGenerator = Callable[[str, int, GenerationContext], str]
-
-
-class ArchitectureVariant(str, Enum):
-    BASE = "base"
-    METAGPT = "A"
-    SKILLS = "B"
-    METAGPT_SKILLS = "C"
-
-
-@dataclass(frozen=True)
-class VariantCapabilities:
-    metagpt_coder: bool = False
-    coder_skill: bool = False
-    tester_skill: bool = False
-
-
-VARIANT_CAPABILITIES = {
-    ArchitectureVariant.BASE: VariantCapabilities(),
-    ArchitectureVariant.METAGPT: VariantCapabilities(metagpt_coder=True),
-    ArchitectureVariant.SKILLS: VariantCapabilities(coder_skill=True, tester_skill=True),
-    ArchitectureVariant.METAGPT_SKILLS: VariantCapabilities(
-        metagpt_coder=True,
-        coder_skill=True,
-        tester_skill=True,
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -203,9 +181,4 @@ def create_coder_workflow(
 def validate_architecture_variant(
     variant: ArchitectureVariant,
 ) -> VariantCapabilities:
-    capabilities = VARIANT_CAPABILITIES[variant]
-    if capabilities.coder_skill or capabilities.tester_skill:
-        raise NotImplementedError(
-            f"Variant {variant.value} is reserved for the future Skill implementation."
-        )
-    return capabilities
+    return get_variant_capabilities(variant)

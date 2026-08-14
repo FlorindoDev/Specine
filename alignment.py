@@ -4,12 +4,11 @@ import random
 import argparse
 import numpy as np
 from tqdm import tqdm
+from cli_types import positive_int
 from coder_workflow import (
-    ArchitectureVariant,
     CodeGenerationRequest,
     TextGenerator,
     create_coder_workflow,
-    validate_architecture_variant,
 )
 from eval_code import eval_code
 from benchmarks import BENCHMARKS
@@ -24,7 +23,22 @@ from model import (
     load_model,
 )
 from sanitize import sanitize_code, remove_code_blocks
+from tester_skill import DEFAULT_TESTER_SKILL
+from tester_workflow import (
+    TestGenerationRequest,
+    create_tester_workflow,
+)
 from token_usage import GenerationContext, TokenUsageRecorder
+from result_cache import (
+    cache_matches_model,
+    model_result_namespace,
+    save_cache_metadata,
+)
+from workflow_variants import (
+    ArchitectureVariant,
+    get_variant_capabilities,
+    initial_code_cache_name,
+)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -35,7 +49,7 @@ def load_coder_trace(path):
         return json.load(trace_file)
 
 
-def save_coder_trace(path, trace):
+def save_workflow_trace(path, trace):
     with open(path, 'w', encoding='utf-8') as trace_file:
         json.dump(trace, trace_file, ensure_ascii=False, indent=2)
 
@@ -199,18 +213,19 @@ def alignment():
         "--variant",
         default=ArchitectureVariant.BASE.value,
         choices=[variant.value for variant in ArchitectureVariant],
-        help="base: original Specine; A: MetaGPT Coder; B/C: reserved for Skill extensions",
+        help=(
+            "base: original Specine; A: MetaGPT Coder; B: MetaGPT Tester; "
+            "C: MetaGPT Coder + Tester Skill; D: both MetaGPT workflows; "
+            "E: Tester Skill; F: both workflows + Tester Skill"
+        ),
     )
     parser.add_argument("--save_dir", default='', type=str, required=True)
-    parser.add_argument("--max_iter", default=10, type=int)
+    parser.add_argument("--max_iter", default=10, type=positive_int)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     args.data_name = args.benchmark
     args.variant = ArchitectureVariant(args.variant)
-    try:
-        validate_architecture_variant(args.variant)
-    except NotImplementedError as error:
-        parser.error(str(error))
+    capabilities = get_variant_capabilities(args.variant)
     if args.variant != ArchitectureVariant.BASE:
         args.save_dir = f"{args.save_dir}_{args.variant.value}"
 
@@ -226,13 +241,18 @@ def alignment():
             f"choose one of: {', '.join(sorted(SUPPORTED_MODELS))}"
         )
 
-    run_result_dir = (
-        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}'
+    resolved_model_name = effective_model_name(args.model_name)
+    result_model_name = model_result_namespace(
+        args.model_name,
+        resolved_model_name,
     )
+    model_result_dir = f'./Results/{result_model_name}/{args.data_name}'
+    run_result_dir = f'{model_result_dir}/{args.save_dir}'
+    requires_cache_model_validation = result_model_name != args.model_name
     token_usage_recorder = TokenUsageRecorder(
         output_dir=run_result_dir,
         benchmark=args.benchmark,
-        model=effective_model_name(args.model_name),
+        model=resolved_model_name,
         variant=args.variant.value,
     )
 
@@ -252,8 +272,14 @@ def alignment():
         )
 
     coder_workflow = create_coder_workflow(args.variant, tracked_generate)
-    initial_run_name = "test" if args.variant == ArchitectureVariant.BASE else f"test_{args.variant.value}"
-    initial_result_dir = f'./Results/{args.model_name}/{args.data_name}/{initial_run_name}'
+    tester_skill = DEFAULT_TESTER_SKILL if capabilities.tester_skill else None
+    tester_workflow = create_tester_workflow(
+        capabilities.metagpt_tester,
+        tracked_generate,
+        tester_skill,
+    )
+    initial_run_name = initial_code_cache_name(capabilities)
+    initial_result_dir = f'{model_result_dir}/{initial_run_name}'
 
     ori_test_results = {}
     new_test_results = [{} for _ in range(args.max_iter)]
@@ -266,11 +292,21 @@ def alignment():
         initial_code_path = f'{initial_result_dir}/{problem_id}_code'
         initial_test_result_path = f'{initial_result_dir}/{problem_id}_test_result'
         initial_coder_trace_path = f'{initial_result_dir}/{problem_id}_coder_trace.json'
-        if not all(os.path.exists(path) for path in (
+        initial_cache_metadata_path = f'{initial_code_path}.metadata.json'
+        cache_files_exist = all(os.path.exists(path) for path in (
             initial_prompt_path,
             initial_code_path,
             initial_test_result_path,
-        )):
+        ))
+        cache_model_matches = (
+            not requires_cache_model_validation
+            or cache_matches_model(
+                initial_cache_metadata_path,
+                configured_model=args.model_name,
+                effective_model=resolved_model_name,
+            )
+        )
+        if not cache_files_exist or not cache_model_matches:
             ori_specification = build_specification(
                 args.benchmark,
                 data_instance,
@@ -297,7 +333,12 @@ def alignment():
             open(initial_prompt_path, 'w', encoding='utf-8').write(ori_prompt)
             open(initial_code_path, 'w', encoding='utf-8').write(ori_code)
             open(initial_test_result_path, 'w', encoding='utf-8').write(str(ori_test_result))
-            save_coder_trace(initial_coder_trace_path, coder_result.to_dict())
+            save_workflow_trace(initial_coder_trace_path, coder_result.to_dict())
+            save_cache_metadata(
+                initial_cache_metadata_path,
+                configured_model=args.model_name,
+                effective_model=resolved_model_name,
+            )
 
         ori_test_results[problem_id] = \
             float(open(initial_test_result_path, 'r', encoding='utf-8').read())
@@ -315,13 +356,13 @@ def alignment():
 
         all_files_exist = []
         for iter_n in range(args.max_iter):
-            all_files_exist.append(os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}'))
-            all_files_exist.append(os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}'))
-            all_files_exist.append(os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}'))
+            all_files_exist.append(os.path.exists(f'{run_result_dir}/{problem_id}_prompt_{iter_n}'))
+            all_files_exist.append(os.path.exists(f'{run_result_dir}/{problem_id}_code_{iter_n}'))
+            all_files_exist.append(os.path.exists(f'{run_result_dir}/{problem_id}_test_result_{iter_n}'))
         if all(all_files_exist):
             print('*' * 40)
             for iter_n in range(args.max_iter):
-                new_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
+                new_test_result_all = float(open(f'{run_result_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
                 new_test_results[iter_n][problem_id] = new_test_result_all
                 new_pass1 = round(list(new_test_results[iter_n].values()).count(1.0) / len(new_test_results[0]) * 100, 2)
                 new_apr = round(np.average(list(new_test_results[iter_n].values())) * 100, 2)
@@ -354,16 +395,16 @@ def alignment():
                 print()
                 print('*' * 40)
                 for iter_n in range(args.max_iter):
-                    if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-                        os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'w',
+                    if not os.path.exists(run_result_dir):
+                        os.makedirs(run_result_dir)
+                    open(f'{run_result_dir}/{problem_id}_prompt_{iter_n}', 'w',
                          encoding='utf-8').write(ori_prompt)
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'w',
+                    open(f'{run_result_dir}/{problem_id}_code_{iter_n}', 'w',
                          encoding='utf-8').write(ori_code)
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w',
+                    open(f'{run_result_dir}/{problem_id}_test_result_{iter_n}', 'w',
                          encoding='utf-8').write(str(ori_test_result_all))
-                    save_coder_trace(
-                        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                    save_workflow_trace(
+                        f'{run_result_dir}/{problem_id}_coder_trace_{iter_n}.json',
                         initial_coder_trace,
                     )
                     new_test_results[iter_n][problem_id] = ori_test_result_all
@@ -378,13 +419,13 @@ def alignment():
                     print()
                     print('*' * 40)
                     for iter_n in range(args.max_iter):
-                        if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-                            os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'w', encoding='utf-8').write(ori_prompt)
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(ori_code)
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(ori_test_result_all))
-                        save_coder_trace(
-                            f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                        if not os.path.exists(run_result_dir):
+                            os.makedirs(run_result_dir)
+                        open(f'{run_result_dir}/{problem_id}_prompt_{iter_n}', 'w', encoding='utf-8').write(ori_prompt)
+                        open(f'{run_result_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(ori_code)
+                        open(f'{run_result_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(ori_test_result_all))
+                        save_workflow_trace(
+                            f'{run_result_dir}/{problem_id}_coder_trace_{iter_n}.json',
                             initial_coder_trace,
                         )
                         new_test_results[iter_n][problem_id] = ori_test_result_all
@@ -396,79 +437,24 @@ def alignment():
         else:
             exit()
 
-        if os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case'):
-            generated_test_cases = json.loads(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'r', encoding='utf-8').read())
-        elif len(json.dumps(public_test_cases)) < 1024:
-            generated_test_cases_prompt = ori_specification
-            generated_test_cases_prompt += f'\n\n#TEST CASES:\n```json\n{json.dumps(public_test_cases)}\n```'
-            generated_test_cases_prompt += f"\n\n#INSTRUCTION:\nImplement a representative set of test cases for the above programming specification, ensure that the generated test cases are correct:"
-            generated_test_cases_prompt += f"\n(1) To verify the fundamental functionality of the programming specification under normal conditions."
-            generated_test_cases_prompt += f"\n(2) To evaluate the function's behavior under extreme or unusual conditions."
-            generated_test_cases_prompt += f"\n(3) To assess the function's performance and scalability with large data samples."
-            generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
-            generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            generated_test_cases_ori = tracked_generate(
-                generated_test_cases_prompt,
-                1024,
-                GenerationContext(
-                    agent="Tester Agent",
-                    stage="generated_tests",
-                    problem_id=problem_id,
-                    iteration=None,
-                ),
-            )
-
-            try:
-                generated_test_cases_ori = sanitize_code(generated_test_cases_ori, ["```json", "```"])
-                generated_test_cases_ori = json.loads(generated_test_cases_ori)
-
-                generated_test_cases = {"inputs": [], "outputs": []}
-                if "inputs" in generated_test_cases_ori.keys() and "outputs" in generated_test_cases_ori.keys():
-                    if type(generated_test_cases_ori["inputs"]) is list and type(generated_test_cases_ori["outputs"]) is list:
-                        if len(generated_test_cases_ori["inputs"]) == len(generated_test_cases_ori["outputs"]):
-                            generated_test_cases['inputs'].extend(generated_test_cases_ori['inputs'])
-                            generated_test_cases['outputs'].extend(generated_test_cases_ori['outputs'])
-            except:
-                generated_test_cases = {"inputs": [], "outputs": []}
-            if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-                os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-            open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w', encoding='utf-8').write(json.dumps(generated_test_cases))
+        test_case_path = f'{run_result_dir}/{problem_id}_test_case'
+        tester_trace_path = f'{run_result_dir}/{problem_id}_tester_trace.json'
+        if os.path.exists(test_case_path):
+            with open(test_case_path, 'r', encoding='utf-8') as test_case_file:
+                generated_test_cases = json.load(test_case_file)
         else:
-            generated_test_cases_prompt = ori_specification
-            generated_test_cases_prompt += f"\n\n#INSTRUCTION:\nImplement a representative set of test cases for the above programming specification, ensure that the generated test cases are correct:"
-            generated_test_cases_prompt += f"\n(1) To verify the fundamental functionality of the programming specification under normal conditions."
-            generated_test_cases_prompt += f"\n(2) To evaluate the function's behavior under extreme or unusual conditions."
-            generated_test_cases_prompt += f"\n(3) To assess the function’s performance and scalability with large data samples."
-            generated_test_cases_prompt += "\nPlease only provide additional test cases in a json format (Response constraints: Max 1000 words, NO code and text):"
-            generated_test_cases_prompt += '\ne.g.,\n```json\n{"inputs": ["x1\\n", "x2\\n", "x3\\n", "x4\\n", "x5\\n", "x6\\n"], "outputs": ["y1\\n", "y2\\n", "y3\\n", y4\\n", "y5\\n", "y6\\n"]}\n```'
-            generated_test_cases_ori = tracked_generate(
-                generated_test_cases_prompt,
-                1024,
-                GenerationContext(
-                    agent="Tester Agent",
-                    stage="generated_tests",
+            tester_result = tester_workflow.generate(
+                TestGenerationRequest(
+                    specification=ori_specification,
+                    public_test_cases=public_test_cases,
                     problem_id=problem_id,
-                    iteration=None,
-                ),
+                )
             )
-
-            try:
-                generated_test_cases_ori = sanitize_code(generated_test_cases_ori, ["```json", "```"])
-                generated_test_cases_ori = json.loads(generated_test_cases_ori)
-
-                generated_test_cases = {"inputs": [], "outputs": []}
-                if "inputs" in generated_test_cases_ori.keys() and "outputs" in generated_test_cases_ori.keys():
-                    if type(generated_test_cases_ori["inputs"]) is list and type(
-                            generated_test_cases_ori["outputs"]) is list:
-                        if len(generated_test_cases_ori["inputs"]) == len(generated_test_cases_ori["outputs"]):
-                            generated_test_cases['inputs'].extend(generated_test_cases_ori['inputs'])
-                            generated_test_cases['outputs'].extend(generated_test_cases_ori['outputs'])
-            except:
-                generated_test_cases = {"inputs": [], "outputs": []}
-
-        if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-            os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_case', 'w', encoding='utf-8').write(json.dumps(generated_test_cases))
+            generated_test_cases = tester_result.test_cases
+            os.makedirs(os.path.dirname(test_case_path), exist_ok=True)
+            with open(test_case_path, 'w', encoding='utf-8') as test_case_file:
+                json.dump(generated_test_cases, test_case_file, ensure_ascii=False)
+            save_workflow_trace(tester_trace_path, tester_result.to_dict())
 
         _, ori_test_result = eval_code(args, public_test_cases, ori_code)
         if len(generated_test_cases["inputs"]):
@@ -482,16 +468,16 @@ def alignment():
         optimization_list = []
         cache_list = {}
         for iter_n in range(args.max_iter):
-            if os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}') and \
-                os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}') and \
-                os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}') and \
-                os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{iter_n}'):
-                new_optimization = open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{iter_n}', 'r', encoding='utf-8').read()
+            if os.path.exists(f'{run_result_dir}/{problem_id}_prompt_{iter_n}') and \
+                os.path.exists(f'{run_result_dir}/{problem_id}_code_{iter_n}') and \
+                os.path.exists(f'{run_result_dir}/{problem_id}_test_result_{iter_n}') and \
+                os.path.exists(f'{run_result_dir}/{problem_id}_optimization_{iter_n}'):
+                new_optimization = open(f'{run_result_dir}/{problem_id}_optimization_{iter_n}', 'r', encoding='utf-8').read()
                 optimization_list.append(new_optimization)
-                new_specification = open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'r', encoding='utf-8').read()
-                new_code = open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'r', encoding='utf-8').read()
-                new_test_result_all = float(open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
-                coder_trace_path = f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json'
+                new_specification = open(f'{run_result_dir}/{problem_id}_prompt_{iter_n}', 'r', encoding='utf-8').read()
+                new_code = open(f'{run_result_dir}/{problem_id}_code_{iter_n}', 'r', encoding='utf-8').read()
+                new_test_result_all = float(open(f'{run_result_dir}/{problem_id}_test_result_{iter_n}', 'r', encoding='utf-8').read())
+                coder_trace_path = f'{run_result_dir}/{problem_id}_coder_trace_{iter_n}.json'
                 new_coder_trace = load_coder_trace(coder_trace_path)
                 new_code = sanitize_code(new_code, ["```python", "```"])
                 _, new_test_result = eval_code(args, public_test_cases, new_code)
@@ -555,28 +541,28 @@ def alignment():
 
                 if best_test_result == 1.0 and best_test_result2 == 1.0:
                     for temp_iter_n in range(iter_n, args.max_iter):
-                        if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-                            os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{temp_iter_n}', 'w', encoding='utf-8').write(best_specification)
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{temp_iter_n}', 'w', encoding='utf-8').write(best_code)
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{temp_iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
-                        open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{temp_iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
-                        save_coder_trace(
-                            f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{temp_iter_n}.json',
+                        if not os.path.exists(run_result_dir):
+                            os.makedirs(run_result_dir)
+                        open(f'{run_result_dir}/{problem_id}_prompt_{temp_iter_n}', 'w', encoding='utf-8').write(best_specification)
+                        open(f'{run_result_dir}/{problem_id}_code_{temp_iter_n}', 'w', encoding='utf-8').write(best_code)
+                        open(f'{run_result_dir}/{problem_id}_test_result_{temp_iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
+                        open(f'{run_result_dir}/{problem_id}_optimization_{temp_iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
+                        save_workflow_trace(
+                            f'{run_result_dir}/{problem_id}_coder_trace_{temp_iter_n}.json',
                             best_coder_trace,
                         )
                         new_test_results[temp_iter_n][problem_id] = best_test_result_all
                         print(f"        >> Iter={temp_iter_n} [id={problem_id}](hierarchical criteria): {round(best_test_result * 100, 2)}%({round(best_test_result2 * 100, 2)}%) ==> {round(new_test_result * 100, 2)}%({round(new_test_result2 * 100, 2)}%)")
                     break
                 else:
-                    if not os.path.exists(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/'):
-                        os.makedirs(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/')
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_prompt_{iter_n}', 'w', encoding='utf-8').write(best_specification)
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(best_code)
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
-                    open(f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_optimization_{iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
-                    save_coder_trace(
-                        f'./Results/{args.model_name}/{args.data_name}/{args.save_dir}/{problem_id}_coder_trace_{iter_n}.json',
+                    if not os.path.exists(run_result_dir):
+                        os.makedirs(run_result_dir)
+                    open(f'{run_result_dir}/{problem_id}_prompt_{iter_n}', 'w', encoding='utf-8').write(best_specification)
+                    open(f'{run_result_dir}/{problem_id}_code_{iter_n}', 'w', encoding='utf-8').write(best_code)
+                    open(f'{run_result_dir}/{problem_id}_test_result_{iter_n}', 'w', encoding='utf-8').write(str(best_test_result_all))
+                    open(f'{run_result_dir}/{problem_id}_optimization_{iter_n}', 'w', encoding='utf-8').write(optimization_list[-1])
+                    save_workflow_trace(
+                        f'{run_result_dir}/{problem_id}_coder_trace_{iter_n}.json',
                         best_coder_trace,
                     )
 
