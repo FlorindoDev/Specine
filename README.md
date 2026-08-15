@@ -1,5 +1,10 @@
 # Specine: MetaGPT Variants and Tester Skill / Varianti MetaGPT e Tester Skill
 
+## Paper Repository / Repository del paper
+
+> [!IMPORTANT]
+> **[Delegated Code Generation with LLM Agents: Paper Repository / Repository del paper](https://github.com/FlorindoDev/Delegated-Code-Generation-with-LLM-Agents)**
+
 ## Contents / Indice
 
 - [English](#english)
