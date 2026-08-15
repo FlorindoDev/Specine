@@ -3,18 +3,185 @@ import re
 import sys
 import json
 import argparse
+import math
+import multiprocessing
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from statistics import fmean
 from typing import Any
 
-import numpy as np
-from tqdm import tqdm
-import multiprocessing
-import testing_util as test_util
-from datasets import load_dataset
-from model import DEFAULT_MODEL
-sys.set_int_max_str_digits(0)
+from cli_types import positive_int
+
+
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(0)
+
+
+_ITERATION_RESULT_PATTERN = re.compile(
+    r"^(?P<problem_id>.+)_test_result_(?P<iteration_index>\d+)$"
+)
+
+
+@dataclass(frozen=True)
+class IterationMetrics:
+    iteration: int
+    file_iteration_index: int
+    problem_count: int
+    missing_problem_count: int
+    pass_at_1_percent: float | None
+    avg_pass_ratio_percent: float | None
+    complete: bool
+
+
+@dataclass(frozen=True)
+class IterationMetricsReport:
+    results_dir: str
+    discovered_problem_count: int
+    expected_problem_count: int | None
+    iteration_count: int
+    complete: bool
+    iterations: tuple[IterationMetrics, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "results_dir": self.results_dir,
+            "discovered_problem_count": self.discovered_problem_count,
+            "expected_problem_count": self.expected_problem_count,
+            "iteration_count": self.iteration_count,
+            "complete": self.complete,
+            "iterations": [asdict(metric) for metric in self.iterations],
+        }
+
+
+def build_iteration_metrics_report(
+    results_dir: str | Path,
+    expected_problem_count: int | None = None,
+) -> IterationMetricsReport:
+    """Aggregate paper-style Pass@1 and AvgPassRatio for every iteration."""
+
+    if expected_problem_count is not None and expected_problem_count <= 0:
+        raise ValueError("expected_problem_count must be greater than 0")
+
+    directory = Path(results_dir)
+    results_by_iteration = _load_iteration_results(directory)
+    discovered_problem_ids = {
+        problem_id
+        for iteration_results in results_by_iteration.values()
+        for problem_id in iteration_results
+    }
+    discovered_problem_count = len(discovered_problem_ids)
+    if (
+        expected_problem_count is not None
+        and discovered_problem_count > expected_problem_count
+    ):
+        raise ValueError(
+            "expected_problem_count is smaller than discovered problem count "
+            f"({expected_problem_count} < {discovered_problem_count})"
+        )
+
+    target_problem_count = expected_problem_count or discovered_problem_count
+    last_iteration_index = max(results_by_iteration)
+    iteration_metrics = tuple(
+        _calculate_iteration_metrics(
+            iteration_index,
+            results_by_iteration.get(iteration_index, {}),
+            target_problem_count,
+        )
+        for iteration_index in range(last_iteration_index + 1)
+    )
+    report_complete = (
+        discovered_problem_count == target_problem_count
+        and all(metric.complete for metric in iteration_metrics)
+    )
+    return IterationMetricsReport(
+        results_dir=str(directory.resolve()),
+        discovered_problem_count=discovered_problem_count,
+        expected_problem_count=expected_problem_count,
+        iteration_count=len(iteration_metrics),
+        complete=report_complete,
+        iterations=iteration_metrics,
+    )
+
+
+def save_iteration_metrics_report(
+    report: IterationMetricsReport,
+    output_path: str | Path,
+) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as output_file:
+        json.dump(report.to_dict(), output_file, ensure_ascii=False, indent=2)
+
+
+def _load_iteration_results(
+    results_dir: Path,
+) -> dict[int, dict[str, float]]:
+    if not results_dir.is_dir():
+        raise ValueError(f"results directory does not exist: {results_dir}")
+
+    results_by_iteration: dict[int, dict[str, float]] = {}
+    for path in results_dir.iterdir():
+        if not path.is_file():
+            continue
+        match = _ITERATION_RESULT_PATTERN.fullmatch(path.name)
+        if match is None:
+            continue
+
+        pass_ratio = _read_pass_ratio(path)
+        iteration_index = int(match.group("iteration_index"))
+        problem_id = match.group("problem_id")
+        results_by_iteration.setdefault(iteration_index, {})[problem_id] = pass_ratio
+
+    if not results_by_iteration:
+        raise ValueError(
+            f"no <problem_id>_test_result_<iteration> files found in {results_dir}"
+        )
+    return results_by_iteration
+
+
+def _read_pass_ratio(path: Path) -> float:
+    try:
+        pass_ratio = float(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError) as error:
+        raise ValueError(f"invalid pass ratio in {path}") from error
+    if not math.isfinite(pass_ratio) or not 0.0 <= pass_ratio <= 1.0:
+        raise ValueError(
+            f"invalid pass ratio in {path}: expected finite value between 0 and 1"
+        )
+    return pass_ratio
+
+
+def _calculate_iteration_metrics(
+    iteration_index: int,
+    problem_results: dict[str, float],
+    target_problem_count: int,
+) -> IterationMetrics:
+    pass_ratios = list(problem_results.values())
+    problem_count = len(pass_ratios)
+    if pass_ratios:
+        pass_at_1_percent = round(
+            pass_ratios.count(1.0) / problem_count * 100,
+            2,
+        )
+        avg_pass_ratio_percent = round(fmean(pass_ratios) * 100, 2)
+    else:
+        pass_at_1_percent = None
+        avg_pass_ratio_percent = None
+
+    return IterationMetrics(
+        iteration=iteration_index + 1,
+        file_iteration_index=iteration_index,
+        problem_count=problem_count,
+        missing_problem_count=target_problem_count - problem_count,
+        pass_at_1_percent=pass_at_1_percent,
+        avg_pass_ratio_percent=avg_pass_ratio_percent,
+        complete=problem_count == target_problem_count,
+    )
 
 
 def _run_test_in_subprocess(in_outs, code, debug, result):
+    import testing_util as test_util
+
     try:
         if debug:
             print(f"Running test for problem: {in_outs}")
@@ -47,6 +214,8 @@ def check_correctness(in_outs, code, timeout, debug):
 
 
 def eval_code(args, in_outs, code, TIMEOUT=15):
+    import numpy as np
+
     res = [-2]
     try:
         res = check_correctness(in_outs, code, timeout=TIMEOUT, debug=args.debug)
@@ -69,6 +238,8 @@ def eval_code(args, in_outs, code, TIMEOUT=15):
 
 
 def eval_code_new(args, all_in_outs, code, TIMEOUT=15):
+    import numpy as np
+
     results = []
     for i in range(len(all_in_outs['inputs'])):
         in_outs = {'inputs': [all_in_outs['inputs'][i]], 'outputs': [all_in_outs['outputs'][i]]}
@@ -82,6 +253,8 @@ def eval_code_new(args, all_in_outs, code, TIMEOUT=15):
 
 
 def load_data(data_name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from datasets import load_dataset
+
     if data_name == 'apps':
         ds_train = load_dataset("./Datasets/apps", split="train", trust_remote_code=True)
         ds_test = load_dataset("./Datasets/apps", split="test", trust_remote_code=True)
@@ -131,24 +304,117 @@ def sanitize_code(input_string, split_word):
     return output_string
 
 
-def main():
+def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--results_dir",
+        type=Path,
+        help=(
+            "directory Specine containing "
+            "<problem_id>_test_result_<iteration> files"
+        ),
+    )
+    parser.add_argument(
+        "--expected_problems",
+        type=positive_int,
+        help="expected benchmark problem count; required with --results_dir",
+    )
+    parser.add_argument(
+        "--metrics_output",
+        type=Path,
+        help="metrics JSON path; default: <results_dir>/iteration_metrics.json",
+    )
     parser.add_argument(
         "--data_name",
         choices=("apps", "code_contests", "xCodeEval"),
-        required=True,
-        help='apps, code_contests, xCodeEval',
+        help="legacy evaluation mode: apps, code_contests, xCodeEval",
     )
     parser.add_argument(
         "--model_name",
-        default=DEFAULT_MODEL,
         type=str,
-        help=f"modello LLM; default: {DEFAULT_MODEL}",
+        help="legacy evaluation mode model; default: project DEFAULT_MODEL",
     )
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_argument_parser()
+    args = parser.parse_args(argv)
+
+    if args.results_dir is not None:
+        if any((
+            args.data_name is not None,
+            args.model_name is not None,
+            args.train,
+            args.test,
+            args.debug,
+        )):
+            parser.error(
+                "--results_dir cannot be combined with legacy evaluation options"
+            )
+        if args.expected_problems is None:
+            parser.error(
+                "--expected_problems is required with --results_dir so incomplete "
+                "runs are not reported as paper-comparable"
+            )
+        try:
+            report = build_iteration_metrics_report(
+                args.results_dir,
+                expected_problem_count=args.expected_problems,
+            )
+            output_path = (
+                args.metrics_output
+                if args.metrics_output is not None
+                else args.results_dir / "iteration_metrics.json"
+            )
+            save_iteration_metrics_report(report, output_path)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+
+        _print_iteration_metrics(report)
+        print(f"Metrics saved: {output_path}")
+        if not report.complete:
+            print(
+                "WARNING: partial run; metrics are not comparable with paper results"
+            )
+        return 0
+
+    if args.expected_problems is not None or args.metrics_output is not None:
+        parser.error("--expected_problems and --metrics_output require --results_dir")
+    if args.data_name is None:
+        parser.error("--data_name is required in legacy evaluation mode")
+
+    from model import DEFAULT_MODEL
+
+    args.model_name = args.model_name or DEFAULT_MODEL
+    return _run_legacy_evaluation(args)
+
+
+def _print_iteration_metrics(report: IterationMetricsReport) -> None:
+    target_problem_count = (
+        report.expected_problem_count or report.discovered_problem_count
+    )
+    print("N  Problems  Pass@1  AvgPassRatio  Status")
+    for metric in report.iterations:
+        pass_at_1 = _format_percentage(metric.pass_at_1_percent)
+        avg_pass_ratio = _format_percentage(metric.avg_pass_ratio_percent)
+        status = "complete" if metric.complete else "partial"
+        print(
+            f"{metric.iteration:<2} "
+            f"{metric.problem_count:>4}/{target_problem_count:<4} "
+            f"{pass_at_1:>8}  {avg_pass_ratio:>12}  {status}"
+        )
+
+
+def _format_percentage(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}%"
+
+
+def _run_legacy_evaluation(args) -> int:
+    from tqdm import tqdm
 
     train_data, test_data = load_data(args.data_name)
     all_data = {'train': train_data, 'test': test_data}
@@ -223,6 +489,8 @@ def main():
             all_pass_ratio.append(pass_ratio)
             open(f'./Results/{args.model_name}/{args.data_name}/{data_mode}/{problem_id}_test_result', 'w', encoding='utf-8').write(str(pass_ratio))
 
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

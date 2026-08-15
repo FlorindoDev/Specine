@@ -139,7 +139,7 @@ python alignment.py --model_name openrouter --benchmark apps --save_dir openrout
 
 ## File avviabili e flag
 
-Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datasets.py` per scaricare i dataset. `eval_code.py` conserva un entry point legacy: la valutazione usata dal flusso corrente viene già eseguita internamente da `alignment.py`, quindi non è necessario avviarlo separatamente.
+Le CLI supportate sono `alignment.py` per eseguire i benchmark, `download_datasets.py` per scaricare i dataset ed `eval_code.py` per aggregare Pass@1 e AvgPassRatio dai risultati di ogni iterazione. `eval_code.py` conserva anche il precedente entry point di valutazione legacy.
 
 ### alignment.py
 
@@ -200,7 +200,7 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datas
       <td><code>--max_iter</code></td>
       <td>No</td>
       <td><code>10</code></td>
-      <td>Numero intero</td>
+      <td>Numero intero positivo</td>
       <td>Imposta il numero massimo di iterazioni per ogni problema.</td>
     </tr>
     <tr>
@@ -257,7 +257,7 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark e `download_datas
 
 ### eval_code.py
 
-Questa tabella descrive esclusivamente l'entry point legacy.
+La modalità metriche legge i risultati già prodotti da Specine e non riesegue codice o chiamate LLM. Le opzioni indicate come legacy restano disponibili per compatibilità.
 
 <table>
   <thead>
@@ -272,7 +272,7 @@ Questa tabella descrive esclusivamente l'entry point legacy.
   </thead>
   <tbody>
     <tr>
-      <td><code>eval_code.py</code> legacy</td>
+      <td><code>eval_code.py</code></td>
       <td><code>-h</code>, <code>--help</code></td>
       <td>No</td>
       <td>Nessuno</td>
@@ -280,11 +280,35 @@ Questa tabella descrive esclusivamente l'entry point legacy.
       <td>Mostra la guida della CLI e termina.</td>
     </tr>
     <tr>
+      <td><code>eval_code.py</code> metriche</td>
+      <td><code>--results_dir</code></td>
+      <td>Sì, in modalità metriche</td>
+      <td>Nessuno</td>
+      <td>Directory di un run Specine</td>
+      <td>Legge i file <code>&lt;problem_id&gt;_test_result_&lt;iterazione&gt;</code>.</td>
+    </tr>
+    <tr>
+      <td><code>eval_code.py</code> metriche</td>
+      <td><code>--expected_problems</code></td>
+      <td>Sì, con <code>--results_dir</code></td>
+      <td>Nessuno</td>
+      <td>Intero positivo</td>
+      <td>Verifica copertura del benchmark e impedisce di presentare un run parziale come completo.</td>
+    </tr>
+    <tr>
+      <td><code>eval_code.py</code> metriche</td>
+      <td><code>--metrics_output</code></td>
+      <td>No</td>
+      <td><code>&lt;results_dir&gt;/iteration_metrics.json</code></td>
+      <td>Percorso JSON</td>
+      <td>Imposta il file nel quale salvare il riepilogo.</td>
+    </tr>
+    <tr>
       <td><code>eval_code.py</code> legacy</td>
       <td><code>--data_name</code></td>
-      <td>No</td>
-      <td>Stringa vuota</td>
-      <td>Qualsiasi stringa. I valori previsti dalla vecchia CLI sono <code>apps</code>, <code>code_contests</code> e <code>xCodeEval</code>.</td>
+      <td>Sì, in modalità legacy</td>
+      <td>Nessuno</td>
+      <td><code>apps</code>, <code>code_contests</code>, <code>xCodeEval</code></td>
       <td>Seleziona il vecchio nome del dataset usato dalla CLI legacy.</td>
     </tr>
     <tr>
@@ -321,6 +345,17 @@ Questa tabella descrive esclusivamente l'entry point legacy.
     </tr>
   </tbody>
 </table>
+
+Per calcolare metriche delle dieci iterazioni di un run APPS-Eval completo:
+
+```powershell
+python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-07-18__c6a932a78315/apps-eval/metagpt_apps_eval_A" --expected_problems 300
+```
+
+Per ogni `N`, lo script usa esclusivamente i risultati della corrispondente iterazione per tutti i problemi: `N=1` legge i file con suffisso `_test_result_0`, mentre `N=10` legge `_test_result_9`. Quindi quando calcolo Pass@1 del iterazione 1 sto consdierando solo i risultati della prima iterazione di tutti i problemi del banckmark.
+Pass@1 è la percentuale di problemi con pass ratio `1.0`; AvgPassRatio è la media dei pass ratio dei test privati. Il riepilogo viene stampato e salvato in `iteration_metrics.json`.
+
+Se alcuni file mancano, ogni riga indica `partial` e il JSON contiene `complete: false`. Questi valori descrivono soltanto i problemi disponibili e non sono confrontabili con i risultati completi del paper.
 
 Per vedere la guida generata direttamente da ogni entry point usare questi comandi dopo avere installato le dipendenze.
 
