@@ -4,41 +4,24 @@ from enum import Enum
 
 class ArchitectureVariant(str, Enum):
     BASE = "base"
-    METAGPT_CODER = "A"
-    METAGPT_TESTER = "B"
-    METAGPT_CODER_TESTER_SKILL = "C"
-    METAGPT_CODER_AND_TESTER = "D"
-    TESTER_SKILL = "E"
-    FULL = "F"
-
-    # Backward-compatible name used by the original variant-A implementation.
-    METAGPT = "A"
+    CUSTOM_CODER = "A"
+    CUSTOM_TESTER = "B"
+    CUSTOM_CODER_AND_TESTER = "D"
 
 
 @dataclass(frozen=True)
 class VariantCapabilities:
-    metagpt_coder: bool = False
-    metagpt_tester: bool = False
-    tester_skill: bool = False
+    custom_coder: bool = False
+    custom_tester: bool = False
 
 
 VARIANT_CAPABILITIES = {
     ArchitectureVariant.BASE: VariantCapabilities(),
-    ArchitectureVariant.METAGPT_CODER: VariantCapabilities(metagpt_coder=True),
-    ArchitectureVariant.METAGPT_TESTER: VariantCapabilities(metagpt_tester=True),
-    ArchitectureVariant.METAGPT_CODER_TESTER_SKILL: VariantCapabilities(
-        metagpt_coder=True,
-        tester_skill=True,
-    ),
-    ArchitectureVariant.METAGPT_CODER_AND_TESTER: VariantCapabilities(
-        metagpt_coder=True,
-        metagpt_tester=True,
-    ),
-    ArchitectureVariant.TESTER_SKILL: VariantCapabilities(tester_skill=True),
-    ArchitectureVariant.FULL: VariantCapabilities(
-        metagpt_coder=True,
-        metagpt_tester=True,
-        tester_skill=True,
+    ArchitectureVariant.CUSTOM_CODER: VariantCapabilities(custom_coder=True),
+    ArchitectureVariant.CUSTOM_TESTER: VariantCapabilities(custom_tester=True),
+    ArchitectureVariant.CUSTOM_CODER_AND_TESTER: VariantCapabilities(
+        custom_coder=True,
+        custom_tester=True,
     ),
 }
 
@@ -52,4 +35,4 @@ def get_variant_capabilities(
 def initial_code_cache_name(capabilities: VariantCapabilities) -> str:
     """Share initial code only between variants with the same Coder workflow."""
 
-    return "test_A" if capabilities.metagpt_coder else "test"
+    return "test_A" if capabilities.custom_coder else "test"

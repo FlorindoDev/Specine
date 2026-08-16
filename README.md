@@ -1,4 +1,4 @@
-# Specine: MetaGPT Variants and Tester Skill / Varianti MetaGPT e Tester Skill
+# Specine: Custom Workflow Variants / Varianti con workflow custom
 
 ## Paper Repository / Repository del paper
 
@@ -8,6 +8,7 @@
 ## Contents / Indice
 
 - [English](#english)
+  - [Relevant files](#relevant-files)
   - [Objective](#objective)
   - [Execution modes](#execution-modes)
   - [Environment setup](#environment-setup)
@@ -19,11 +20,12 @@
   - [Complete default run configuration](#complete-default-run-configuration)
   - [Starting the baseline (Base)](#starting-the-baseline-base)
   - [Starting variant A](#starting-variant-a)
-  - [Starting variants B–F](#starting-variants-bf)
+  - [Starting variants B and D](#starting-variants-b-and-d)
   - [Quick run](#quick-run)
   - [Initial Code cache and parallelism](#initial-code-cache-and-parallelism)
   - [Results](#results)
 - [Italiano](#italiano)
+  - [File rilevanti](#file-rilevanti)
   - [Obiettivo](#obiettivo)
   - [Modalità di esecuzione](#modalità-di-esecuzione)
   - [Preparazione dell'ambiente](#preparazione-dellambiente)
@@ -35,45 +37,56 @@
   - [Configurazione completa del run predefinito](#configurazione-completa-del-run-predefinito)
   - [Avvio della baseline (Base)](#avvio-della-baseline-base)
   - [Avvio della variante A](#avvio-della-variante-a)
-  - [Avvio delle varianti B–F](#avvio-delle-varianti-bf)
+  - [Avvio delle varianti B e D](#avvio-delle-varianti-b-e-d)
   - [Esecuzione rapida](#esecuzione-rapida)
   - [Cache dell'Initial Code e parallelismo](#cache-dellinitial-code-e-parallelismo)
   - [Risultati](#risultati)
 
-![Varianti architetturali A, B e C di Specine](Figures/architecture-variants-a-c.png)
-
-![Varianti architetturali D, E e F di Specine](Figures/architecture-variants-d-f.png)
+![Varianti architetturali A, B e D di Specine](Figures/architecture-variants-a-b-d.png)
 
 ## English
+
+## Relevant files
+
+| File | Role |
+| --- | --- |
+| `alignment.py` | Main benchmark entry point. Orchestrates dataset loading, code and test generation, iterative alignment, evaluation, caching, and result persistence. |
+| `eval_code.py` | Offline metrics CLI. Reads iteration result files and produces Pass@1 and AvgPassRatio summaries without executing generated code. |
+| `download_datasets.py` | Downloads and validates the supported benchmark datasets. |
+| `download_model.py` | Downloads the supported local model artifacts. |
+| `benchmarks.py` | Defines the supported benchmarks and their configuration. |
+| `workflow_variants.py` | Maps Base and variants A, B, and D to their Coder and Tester workflow capabilities. |
+| `coder_workflow.py` | Implements direct and custom multi-role Coder workflows. |
+| `tester_workflow.py` | Implements direct and custom multi-role Tester workflows. |
+| `model.py` | Selects local or remote model backends and provides the common text-generation interface. |
+| `data.py` | Loads benchmark records and converts them into specifications, prompts, and evaluation test cases. |
+| `sanitize.py` | Cleans generated code and removes Markdown code fences or unwanted assertions and comments. |
+| `code_evaluator.py` | Active evaluation adapter used by `alignment.py`; runs generated code in a subprocess and calculates its pass ratio. |
+| `testing_util.py` | Low-level harness that executes call-based or standard-input test cases against generated code. |
+| `result_cache.py` | Builds result namespaces and validates cache metadata against the effective model. |
+| `token_usage.py` | Records prompt and completion token usage for model calls. |
+| `cli_types.py` | Provides reusable validation types for command-line arguments. |
 
 ## Objective
 
 This fork compares the original Specine generation process with variants that evolve the Coder Agent and Tester Agent workflows.
 
-The [Base mode](#starting-the-baseline-base) uses direct agents. Variants A–F combine three reusable components in a controlled manner: the Coder MetaGPT workflow, the Tester MetaGPT workflow, and the Tester Skill.
+The [Base mode](#starting-the-baseline-base) uses direct agents. Variants A, B, and D combine the custom Coder and Tester workflows in a controlled manner.
 
 The only available benchmarks are APPS, APPS-Eval, and CodeContests-Raw.
 
 > [!NOTE]
-> Among the variants described below, the paper experimentally tests only variants A, B, and D. Variants C, E, and F have been implemented but were not tested in the paper.
+> The supported variants A, B, and D are the variants experimentally tested in the paper.
 
 ## Execution modes
 
 The **Base (baseline)** is the reference version: it runs the original Specine workflow, in which the Coder Agent generates code with a single model call. Start it with `--variant base`; because `base` is the default value, the flag may be omitted. See [Starting the baseline](#starting-the-baseline-base).
 
-**Variant A** keeps the Tester Agent and the Specine alignment process unchanged, but replaces direct Coder Agent generation with a MetaGPT sub-workflow: Product Manager, Architect, Project Manager, and Engineer work in sequence before code generation. See [Starting variant A](#starting-variant-a).
+**Variant A** keeps the Tester Agent and the Specine alignment process unchanged, but replaces direct Coder Agent generation with a custom multi-role workflow: Product Manager, Architect, Project Manager, and Engineer work in sequence before code generation. See [Starting variant A](#starting-variant-a).
 
-**Variant B** keeps the direct Coder Agent and uses the MetaGPT workflow in the Tester Agent. Test Analyst, Test Designer, Test Generator, and Test Reviewer / Validator interpret constraints, design cases, calculate expected outputs, and validate the final JSON.
+**Variant B** keeps the direct Coder Agent and uses the custom multi-role Tester workflow. Test Analyst, Test Designer, Test Generator, and Test Reviewer / Validator interpret constraints, design cases, calculate expected outputs, and validate the final JSON.
 
-**Variant C** combines the MetaGPT Coder from variant A with a direct Tester Agent guided by the Tester Skill. The Skill enforces requirement extraction, base/boundary and adversarial cases, independent output calculation, and validation.
-
-**Variant D** uses both MetaGPT workflows. The four Coder roles produce the Initial Code; the four Tester roles produce and review the Generated Tests.
-
-**Variant E** keeps the direct Coder Agent and applies only the Tester Skill. Comparing it with Base therefore isolates the Skill's effect on test quality.
-
-**Variant F** integrates both MetaGPT workflows and injects the Tester Skill into every phase of the Tester workflow. It is the most complete configuration and the most expensive in terms of LLM calls.
-
-The default Skill lives in `tester_skill.py`: edit `DEFAULT_TESTER_SKILL` or pass another `TesterSkill` instance to `create_tester_workflow` to experiment with different instructions without changing the workflow.
+**Variant D** uses both custom multi-role workflows. The four Coder roles produce the Initial Code; the four Tester roles produce and review the Generated Tests.
 
 Base results serve as the comparison point for measuring the effect of the other modes. For a fair comparison, use the same model, the same benchmark, and the same maximum number of iterations; only the selected workflow should change.
 
@@ -206,7 +219,7 @@ python alignment.py --model_name openrouter --benchmark apps --save_dir openrout
 
 ## Runnable files and flags
 
-The supported CLIs are `alignment.py` for running benchmarks, `download_datasets.py` for downloading datasets, and `eval_code.py` for aggregating Pass@1 and AvgPassRatio from each iteration's results. `eval_code.py` also preserves the previous legacy evaluation entry point.
+The supported CLIs are `alignment.py` for running benchmarks, `download_datasets.py` for downloading datasets, and `eval_code.py` for aggregating Pass@1 and AvgPassRatio from each iteration's results.
 
 ### alignment.py
 
@@ -251,8 +264,8 @@ The supported CLIs are `alignment.py` for running benchmarks, `download_datasets
       <td><code>--variant</code></td>
       <td>No</td>
       <td><code>base</code></td>
-      <td><code>base</code>, <code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>, <code>E</code>, <code>F</code></td>
-      <td><code>A</code>: Coder MetaGPT; <code>B</code>: Tester MetaGPT; <code>C</code>: Coder MetaGPT + Tester Skill; <code>D</code>: both MetaGPT; <code>E</code>: Tester Skill; <code>F</code>: both MetaGPT + Tester Skill.</td>
+      <td><code>base</code>, <code>A</code>, <code>B</code>, <code>D</code></td>
+      <td><code>A</code>: custom Coder; <code>B</code>: custom Tester; <code>D</code>: both custom workflows.</td>
     </tr>
     <tr>
       <td><code>alignment.py</code></td>
@@ -324,7 +337,7 @@ The supported CLIs are `alignment.py` for running benchmarks, `download_datasets
 
 ### eval_code.py
 
-Metrics mode reads results already produced by Specine and does not rerun code or LLM calls. Options marked as legacy remain available for compatibility.
+`eval_code.py` reads results already produced by Specine and does not rerun code or LLM calls.
 
 <table>
   <thead>
@@ -347,68 +360,28 @@ Metrics mode reads results already produced by Specine and does not rerun code o
       <td>Displays the CLI help and exits.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metrics</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--results_dir</code></td>
-      <td>Yes, in metrics mode</td>
+      <td>Yes</td>
       <td>None</td>
       <td>Directory of a Specine run</td>
       <td>Reads the <code>&lt;problem_id&gt;_test_result_&lt;iteration&gt;</code> files.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metrics</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--expected_problems</code></td>
-      <td>Yes, with <code>--results_dir</code></td>
+      <td>Yes</td>
       <td>None</td>
       <td>Positive integer</td>
       <td>Verifies benchmark coverage and prevents a partial run from being presented as complete.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metrics</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--metrics_output</code></td>
       <td>No</td>
       <td><code>&lt;results_dir&gt;/iteration_metrics.json</code></td>
       <td>JSON path</td>
       <td>Sets the file in which the summary is saved.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--data_name</code></td>
-      <td>Yes, in legacy mode</td>
-      <td>None</td>
-      <td><code>apps</code>, <code>code_contests</code>, <code>xCodeEval</code></td>
-      <td>Selects the old dataset name used by the legacy CLI.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--model_name</code></td>
-      <td>No</td>
-      <td><code>deepseek-coder-7b-instruct-v1.5</code></td>
-      <td>Model name</td>
-      <td>Identifies the results directory to evaluate.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--train</code></td>
-      <td>No</td>
-      <td>Disabled</td>
-      <td>Flag without a value</td>
-      <td>Selects the old training partition.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--test</code></td>
-      <td>No</td>
-      <td>Disabled</td>
-      <td>Flag without a value</td>
-      <td>Selects the old evaluation partition. If neither this flag nor <code>--train</code> is passed, the program exits without processing data.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--debug</code></td>
-      <td>No</td>
-      <td>Disabled</td>
-      <td>Flag without a value</td>
-      <td>Enables diagnostics during evaluation.</td>
     </tr>
   </tbody>
 </table>
@@ -416,7 +389,7 @@ Metrics mode reads results already produced by Specine and does not rerun code o
 To calculate metrics for all ten iterations of a complete APPS-Eval run:
 
 ```powershell
-python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-07-18__c6a932a78315/apps-eval/metagpt_apps_eval_A" --expected_problems 300
+python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-07-18__c6a932a78315/apps-eval/custom_apps_eval_A" --expected_problems 300
 ```
 
 For every `N`, the script uses only the results from the corresponding iteration for all problems: `N=1` reads files with the `_test_result_0` suffix, while `N=10` reads `_test_result_9` files. Therefore, when calculating Pass@1 for iteration 1, only the first-iteration results from all benchmark problems are considered.
@@ -448,9 +421,9 @@ python alignment.py --benchmark apps --save_dir baseline_apps
 | CLI | Variant | `base` | Uses the original Coder Agent with a single call for each code generation. |
 | CLI | Maximum iterations | `10` | Corresponds to `--max_iter 10`. |
 | CLI | Debug | Disabled | Enabled by adding `--debug`. |
-| Direct Coder | Coder Agent | Maximum `1024` output tokens | Code generation for Base and variants B and E; value declared in the paper. |
-| Coder MetaGPT | Product Manager, Architect, and Project Manager | Maximum `512` output tokens per role | Intermediate phases of variants A, C, D, and F. |
-| Coder MetaGPT | Engineer | Maximum `1024` output tokens | Final code generation for variants A, C, D, and F. |
+| Direct Coder | Coder Agent | Maximum `1024` output tokens | Code generation for Base and variant B; value declared in the paper. |
+| Custom Coder | Product Manager, Architect, and Project Manager | Maximum `512` output tokens per role | Intermediate phases of variants A and D. |
+| Custom Coder | Engineer | Maximum `1024` output tokens | Final code generation for variants A and D. |
 | Generation | Temperature | `0.8` | Value declared in the paper. |
 | Generation | Sampling | Enabled | `do_sample=True`, required for the temperature to be applied by Transformers. |
 | Generation | Random seed | Not set | Two runs may produce different outputs because of sampling. |
@@ -463,12 +436,12 @@ python alignment.py --benchmark apps --save_dir baseline_apps
 | Specine phases | Misalignment selection | Maximum `64` tokens | Phase-specific limit. |
 | Specine phases | Alignment rule | Maximum `256` tokens | Phase-specific limit. |
 | Specine phases | Additional test generation | Maximum `1024` tokens | Used when model-generated tests are required. |
-| Tester MetaGPT | Test Analyst and Test Designer | Maximum `512` tokens per role | Intermediate phases of variants B, D, and F. |
-| Tester MetaGPT | Test Generator and Test Reviewer / Validator | Maximum `1024` tokens per role | Generation and correction of the final JSON. |
-| Output | Results path | `Results/<model>/<benchmark>/<save_dir>/` | For A–F, the variant suffix is added automatically. |
+| Custom Tester | Test Analyst and Test Designer | Maximum `512` tokens per role | Intermediate phases of variants B and D. |
+| Custom Tester | Test Generator and Test Reviewer / Validator | Maximum `1024` tokens per role | Generation and correction of the final JSON. |
+| Output | Results path | `Results/<model>/<benchmark>/<save_dir>/` | For A, B, and D, the variant suffix is added automatically. |
 | Output | Token usage | Automatic logging | Saves every LLM call and aggregates input/output by agent, iteration, and phase. |
 
-The values `max tokens = 1024`, `temperature = 0.8`, and `N = 10` follow section 4.4 of the [Specine paper](https://arxiv.org/pdf/2509.01313). Variant `A` retains the original configuration already implemented: Product Manager, Architect, and Project Manager have a 512-token limit; Engineer retains 1024 tokens. Variants B–F compose the three modules without modifying the shared lifting and alignment process.
+The values `max tokens = 1024`, `temperature = 0.8`, and `N = 10` follow section 4.4 of the [Specine paper](https://arxiv.org/pdf/2509.01313). Variant `A` retains the original configuration already implemented: Product Manager, Architect, and Project Manager have a 512-token limit; Engineer retains 1024 tokens. Variants B and D compose the custom workflows without modifying the shared lifting and alignment process.
 
 ## Starting the baseline (Base)
 
@@ -494,78 +467,54 @@ python alignment.py --benchmark codecontests-raw --save_dir baseline_codecontest
 
 ## Starting variant A
 
-Variant `A` activates the MetaGPT workflow in the Coder Agent. These commands also use DeepSeek and a maximum of 10 iterations.
+Variant `A` activates the custom multi-role workflow in the Coder Agent. These commands also use DeepSeek and a maximum of 10 iterations.
 
 ### APPS
 
 ```powershell
-python alignment.py --variant A --benchmark apps --save_dir metagpt_apps
+python alignment.py --variant A --benchmark apps --save_dir custom_apps
 ```
 
 ### APPS-Eval
 
 ```powershell
-python alignment.py --variant A --benchmark apps-eval --save_dir metagpt_apps_eval
+python alignment.py --variant A --benchmark apps-eval --save_dir custom_apps_eval
 ```
 
 ### CodeContests-Raw
 
 ```powershell
-python alignment.py --variant A --benchmark codecontests-raw --save_dir metagpt_codecontests_raw
+python alignment.py --variant A --benchmark codecontests-raw --save_dir custom_codecontests_raw
 ```
 
 Variant `A` makes four model calls for each Coder Agent generation. It therefore takes longer than the baseline. The model is loaded only once.
 
-## Starting variants B–F
+## Starting variants B and D
 
 The following examples use APPS. `apps-eval` and `codecontests-raw` work by replacing `--benchmark` and the `--save_dir` name as in the variant A examples.
 
-### Variant B: MetaGPT in the Tester Agent
+### Variant B: custom multi-role Tester workflow
 
 ```powershell
-python alignment.py --variant B --benchmark apps --save_dir metagpt_tester_apps
+python alignment.py --variant B --benchmark apps --save_dir custom_tester_apps
 ```
 
 The Coder remains direct. The Tester makes four sequential calls: analysis, design, JSON generation, and review/validation.
 
-### Variant C: MetaGPT in the Coder and Tester Skill
+### Variant D: custom Coder and Tester workflows
 
 ```powershell
-python alignment.py --variant C --benchmark apps --save_dir metagpt_coder_tester_skill_apps
+python alignment.py --variant D --benchmark apps --save_dir custom_both_apps
 ```
 
-The Coder reuses workflow A. The Tester remains a single agent but receives `DEFAULT_TESTER_SKILL`.
-
-### Variant D: MetaGPT in the Coder and Tester
-
-```powershell
-python alignment.py --variant D --benchmark apps --save_dir metagpt_both_apps
-```
-
-Coder and Tester both use their respective four-role workflows; no Skill is injected.
-
-### Variant E: Tester Skill
-
-```powershell
-python alignment.py --variant E --benchmark apps --save_dir tester_skill_apps
-```
-
-Coder and Tester remain direct; only the Tester prompt is enriched by the Skill.
-
-### Variant F: full integration
-
-```powershell
-python alignment.py --variant F --benchmark apps --save_dir full_integration_apps
-```
-
-The Coder uses MetaGPT. The Tester uses MetaGPT and applies the Tester Skill during analysis, design, generation, and review.
+Coder and Tester both use their respective four-role workflows.
 
 ## Quick run
 
 To check a configuration with a single iteration, use this command.
 
 ```powershell
-python alignment.py --variant F --benchmark apps --save_dir controllo --max_iter 1
+python alignment.py --variant D --benchmark apps --save_dir controllo --max_iter 1
 ```
 
 ## Initial Code cache and parallelism
@@ -579,22 +528,19 @@ The cache depends on the effective model, benchmark, and Coder workflow. `--save
 
 | Cache | Variants that share it | Coder workflow |
 | --- | --- | --- |
-| `test` | `base`, `B`, `E` | Original direct Coder |
-| `test_A` | `A`, `C`, `D`, `F` | MetaGPT Coder: Product Manager, Architect, Project Manager, Engineer |
+| `test` | `base`, `B` | Original direct Coder |
+| `test_A` | `A`, `D` | Custom Coder: Product Manager, Architect, Project Manager, Engineer |
 
 Do not copy or rename `test` to `test_A`, or vice versa: they contain code produced by different architectures, and the experimental comparison would become invalid.
 
 The program does not lock the cache. With the same effective model and benchmark, run at most one variant per group in parallel:
 
-- one process selected from `base/B/E`;
-- one process selected from `A/C/D/F`.
+- one process selected from `base/B`;
+- one process selected from `A/D`.
 
-Recommended combinations include `A + B`, `A + E`, `C + B`, `D + E`, and `F + base`. Variants in the same group, such as `B + E` or `A + C`, must not start together while the shared cache is being generated. If the cache is already complete and compatible, they can read it in parallel because the final results use separate directories.
+Recommended combinations include `A + B` and `D + base`. Variants in the same group, such as `base + B` or `A + D`, must not start together while the shared cache is being generated. If the cache is already complete and compatible, they can read it in parallel because the final results use separate directories.
 
-To run `A`, `B`, and `E`, use two phases:
-
-1. start `A` and `B` in parallel;
-2. start `E` after `B` completes.
+To run `A` and `B`, they may be started in parallel because they use different cache groups.
 
 Different benchmarks and different effective models use separate cache directories and can run in parallel, within GPU, memory, and API rate-limit constraints.
 
@@ -615,10 +561,10 @@ Results are saved according to this structure.
 Results/<model>/<benchmark>/<save_dir>/
 ```
 
-For each variant A–F, the corresponding suffix is automatically added to the name specified in `--save_dir`. For example, the APPS command for variant A creates the following directory.
+For each supported variant A, B, and D, the corresponding suffix is automatically added to the name specified in `--save_dir`. For example, the APPS command for variant A creates the following directory.
 
 ```text
-Results/deepseek-coder-7b-instruct-v1.5/apps/metagpt_apps_A/
+Results/deepseek-coder-7b-instruct-v1.5/apps/custom_apps_A/
 ```
 
 The console displays Pass@1 and AvgPassRatio during execution. If the process is interrupted, rerun the same command to reuse the artifacts already saved.
@@ -628,7 +574,7 @@ Each model call is logged in the run directory:
 - `token_usage.jsonl`: one event per call, containing benchmark, problem, iteration, phase, agent, input tokens, output tokens, and total;
 - `token_usage_summary.json`: benchmark total and aggregations by agent, iteration, and phase.
 
-For each problem that requires additional tests, `<problem_id>_test_case` and `<problem_id>_tester_trace.json` are also saved. The trace identifies the workflow, Skill, and intermediate outputs from the Tester roles.
+For each problem that requires additional tests, `<problem_id>_test_case` and `<problem_id>_tester_trace.json` are also saved. The trace identifies the workflow and intermediate outputs from the Tester roles.
 
 > [!NOTE]
 > **How tokens are counted.** For local models, input and output are calculated directly from tokenizer IDs. For APIs, the `usage` values returned by the provider are read. If `usage` is unavailable, the count is estimated and the event reports `estimated: true` together with the method used.
@@ -637,34 +583,47 @@ For each problem that requires additional tests, `<problem_id>_test_case` and `<
 
 ## Italiano
 
+## File rilevanti
+
+| File | Ruolo |
+| --- | --- |
+| `alignment.py` | Entry point principale dei benchmark. Coordina caricamento dei dataset, generazione di codice e test, allineamento iterativo, valutazione, cache e salvataggio dei risultati. |
+| `eval_code.py` | CLI per le metriche offline. Legge i risultati delle iterazioni e produce i riepiloghi Pass@1 e AvgPassRatio senza eseguire il codice generato. |
+| `download_datasets.py` | Scarica e valida i dataset dei benchmark supportati. |
+| `download_model.py` | Scarica gli artefatti dei modelli locali supportati. |
+| `benchmarks.py` | Definisce i benchmark supportati e la loro configurazione. |
+| `workflow_variants.py` | Associa Base e le varianti A, B e D alle rispettive capacità dei workflow Coder e Tester. |
+| `coder_workflow.py` | Implementa i workflow Coder diretto e custom multi-ruolo. |
+| `tester_workflow.py` | Implementa i workflow Tester diretto e custom multi-ruolo. |
+| `model.py` | Seleziona i backend locali o remoti e fornisce l’interfaccia comune per la generazione di testo. |
+| `data.py` | Carica i record dei benchmark e li converte in specifiche, prompt e casi di test per la valutazione. |
+| `sanitize.py` | Pulisce il codice generato e rimuove blocchi Markdown, assert o commenti indesiderati. |
+| `code_evaluator.py` | Adattatore di valutazione attivo usato da `alignment.py`; esegue il codice generato in un sottoprocesso e ne calcola il pass ratio. |
+| `testing_util.py` | Harness di basso livello che esegue casi di test call-based o standard-input sul codice generato. |
+| `result_cache.py` | Costruisce i namespace dei risultati e verifica i metadati della cache rispetto al modello effettivo. |
+| `token_usage.py` | Registra l’utilizzo dei token di prompt e completamento per le chiamate ai modelli. |
+| `cli_types.py` | Fornisce tipi di validazione riutilizzabili per gli argomenti della riga di comando. |
+
 ## Obiettivo
 
 Questo fork confronta la generazione originale di Specine con varianti che evolvono il workflow del Coder Agent e del Tester Agent.
 
-La [modalità Base](#avvio-della-baseline-base) usa agenti diretti. Le varianti A–F combinano in modo controllato tre componenti riutilizzabili: workflow MetaGPT del Coder, workflow MetaGPT del Tester e Tester Skill.
+La [modalità Base](#avvio-della-baseline-base) usa agenti diretti. Le varianti A, B e D combinano in modo controllato i workflow custom del Coder e del Tester.
 
 I benchmark disponibili sono esclusivamente APPS, APPS-Eval e CodeContests-Raw.
 
 > [!NOTE]
-> Tra le varianti descritte di seguito, nel paper vengono testate sperimentalmente solo le varianti A, B e D. Le varianti C, E e F sono state implementate, ma non sono state testate nel paper.
+> Le varianti supportate A, B e D sono quelle testate sperimentalmente nel paper.
 
 ## Modalità di esecuzione
 
 La **Base (baseline)** è la versione di riferimento: esegue il workflow originale di Specine, nel quale il Coder Agent genera il codice con una sola chiamata al modello. Si avvia con `--variant base`; poiché `base` è il valore predefinito, il flag può essere omesso. Vedere [Avvio della baseline](#avvio-della-baseline-base).
 
-La **variante A** mantiene il Tester Agent e il processo di allineamento di Specine invariati, ma sostituisce la generazione diretta del Coder Agent con un sotto-workflow MetaGPT: Product Manager, Architect, Project Manager ed Engineer lavorano in sequenza prima della generazione del codice. Vedere [Avvio della variante A](#avvio-della-variante-a).
+La **variante A** mantiene il Tester Agent e il processo di allineamento di Specine invariati, ma sostituisce la generazione diretta del Coder Agent con un workflow custom multi-ruolo: Product Manager, Architect, Project Manager ed Engineer lavorano in sequenza prima della generazione del codice. Vedere [Avvio della variante A](#avvio-della-variante-a).
 
-La **variante B** mantiene il Coder Agent diretto e usa il workflow MetaGPT nel Tester Agent. Test Analyst, Test Designer, Test Generator e Test Reviewer / Validator interpretano i vincoli, progettano i casi, calcolano gli output attesi e validano il JSON finale.
+La **variante B** mantiene il Coder Agent diretto e usa il workflow custom multi-ruolo del Tester. Test Analyst, Test Designer, Test Generator e Test Reviewer / Validator interpretano i vincoli, progettano i casi, calcolano gli output attesi e validano il JSON finale.
 
-La **variante C** combina il Coder MetaGPT della variante A con un Tester Agent diretto guidato dalla Tester Skill. La Skill impone estrazione dei requisiti, casi base/boundary e avversariali, calcolo indipendente degli output e validazione.
-
-La **variante D** usa entrambi i workflow MetaGPT. I quattro ruoli del Coder producono l'Initial Code; i quattro ruoli del Tester producono e revisionano i Generated Tests.
-
-La **variante E** mantiene il Coder Agent diretto e applica solo la Tester Skill. Il confronto con Base isola quindi l'effetto della Skill sulla qualità dei test.
-
-La **variante F** integra entrambi i workflow MetaGPT e inietta la Tester Skill in tutte le fasi del workflow Tester. È la configurazione più completa e più costosa in chiamate LLM.
-
-La Skill predefinita vive in `tester_skill.py`: modificare `DEFAULT_TESTER_SKILL` oppure passare un'altra istanza di `TesterSkill` a `create_tester_workflow` per sperimentare istruzioni diverse senza cambiare il workflow.
+La **variante D** usa entrambi i workflow custom multi-ruolo. I quattro ruoli del Coder producono l'Initial Code; i quattro ruoli del Tester producono e revisionano i Generated Tests.
 
 I risultati della Base servono come termine di confronto per misurare l'effetto delle altre modalità. Per un confronto corretto bisogna usare lo stesso modello, lo stesso benchmark e lo stesso numero massimo di iterazioni; deve cambiare solo il workflow scelto.
 
@@ -797,7 +756,7 @@ python alignment.py --model_name openrouter --benchmark apps --save_dir openrout
 
 ## File avviabili e flag
 
-Le CLI supportate sono `alignment.py` per eseguire i benchmark, `download_datasets.py` per scaricare i dataset ed `eval_code.py` per aggregare Pass@1 e AvgPassRatio dai risultati di ogni iterazione. `eval_code.py` conserva anche il precedente entry point di valutazione legacy.
+Le CLI supportate sono `alignment.py` per eseguire i benchmark, `download_datasets.py` per scaricare i dataset ed `eval_code.py` per aggregare Pass@1 e AvgPassRatio dai risultati di ogni iterazione.
 
 ### alignment.py
 
@@ -842,8 +801,8 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark, `download_datase
       <td><code>--variant</code></td>
       <td>No</td>
       <td><code>base</code></td>
-      <td><code>base</code>, <code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>, <code>E</code>, <code>F</code></td>
-      <td><code>A</code>: Coder MetaGPT; <code>B</code>: Tester MetaGPT; <code>C</code>: Coder MetaGPT + Tester Skill; <code>D</code>: entrambi MetaGPT; <code>E</code>: Tester Skill; <code>F</code>: entrambi MetaGPT + Tester Skill.</td>
+      <td><code>base</code>, <code>A</code>, <code>B</code>, <code>D</code></td>
+      <td><code>A</code>: Coder custom; <code>B</code>: Tester custom; <code>D</code>: entrambi i workflow custom.</td>
     </tr>
     <tr>
       <td><code>alignment.py</code></td>
@@ -915,7 +874,7 @@ Le CLI supportate sono `alignment.py` per eseguire i benchmark, `download_datase
 
 ### eval_code.py
 
-La modalità metriche legge i risultati già prodotti da Specine e non riesegue codice o chiamate LLM. Le opzioni indicate come legacy restano disponibili per compatibilità.
+`eval_code.py` legge i risultati già prodotti da Specine e non riesegue codice o chiamate LLM.
 
 <table>
   <thead>
@@ -938,68 +897,28 @@ La modalità metriche legge i risultati già prodotti da Specine e non riesegue 
       <td>Mostra la guida della CLI e termina.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metriche</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--results_dir</code></td>
-      <td>Sì, in modalità metriche</td>
+      <td>Sì</td>
       <td>Nessuno</td>
       <td>Directory di un run Specine</td>
       <td>Legge i file <code>&lt;problem_id&gt;_test_result_&lt;iterazione&gt;</code>.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metriche</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--expected_problems</code></td>
-      <td>Sì, con <code>--results_dir</code></td>
+      <td>Sì</td>
       <td>Nessuno</td>
       <td>Intero positivo</td>
       <td>Verifica copertura del benchmark e impedisce di presentare un run parziale come completo.</td>
     </tr>
     <tr>
-      <td><code>eval_code.py</code> metriche</td>
+      <td><code>eval_code.py</code></td>
       <td><code>--metrics_output</code></td>
       <td>No</td>
       <td><code>&lt;results_dir&gt;/iteration_metrics.json</code></td>
       <td>Percorso JSON</td>
       <td>Imposta il file nel quale salvare il riepilogo.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--data_name</code></td>
-      <td>Sì, in modalità legacy</td>
-      <td>Nessuno</td>
-      <td><code>apps</code>, <code>code_contests</code>, <code>xCodeEval</code></td>
-      <td>Seleziona il vecchio nome del dataset usato dalla CLI legacy.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--model_name</code></td>
-      <td>No</td>
-      <td><code>deepseek-coder-7b-instruct-v1.5</code></td>
-      <td>Nome del modello</td>
-      <td>Individua la cartella dei risultati da valutare.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--train</code></td>
-      <td>No</td>
-      <td>Disattivato</td>
-      <td>Flag senza valore</td>
-      <td>Seleziona la vecchia partizione di addestramento.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--test</code></td>
-      <td>No</td>
-      <td>Disattivato</td>
-      <td>Flag senza valore</td>
-      <td>Seleziona la vecchia partizione di valutazione. Se non si passa né questo flag né <code>--train</code>, il programma termina senza elaborare dati.</td>
-    </tr>
-    <tr>
-      <td><code>eval_code.py</code> legacy</td>
-      <td><code>--debug</code></td>
-      <td>No</td>
-      <td>Disattivato</td>
-      <td>Flag senza valore</td>
-      <td>Abilita la diagnostica durante la valutazione.</td>
     </tr>
   </tbody>
 </table>
@@ -1007,7 +926,7 @@ La modalità metriche legge i risultati già prodotti da Specine e non riesegue 
 Per calcolare metriche delle dieci iterazioni di un run APPS-Eval completo:
 
 ```powershell
-python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-07-18__c6a932a78315/apps-eval/metagpt_apps_eval_A" --expected_problems 300
+python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-07-18__c6a932a78315/apps-eval/custom_apps_eval_A" --expected_problems 300
 ```
 
 Per ogni `N`, lo script usa esclusivamente i risultati della corrispondente iterazione per tutti i problemi: `N=1` legge i file con suffisso `_test_result_0`, mentre `N=10` legge `_test_result_9`. Quindi quando calcolo Pass@1 del iterazione 1 sto consdierando solo i risultati della prima iterazione di tutti i problemi del banckmark.
@@ -1039,9 +958,9 @@ python alignment.py --benchmark apps --save_dir baseline_apps
 | CLI | Variante | `base` | Usa il Coder Agent originale con una sola chiamata per ogni generazione di codice. |
 | CLI | Iterazioni massime | `10` | Corrisponde a `--max_iter 10`. |
 | CLI | Debug | Disattivato | Si abilita aggiungendo `--debug`. |
-| Coder diretto | Coder Agent | Massimo `1024` token di output | Generazione del codice per Base e per le varianti B ed E; valore dichiarato nel paper. |
-| Coder MetaGPT | Product Manager, Architect e Project Manager | Massimo `512` token di output per ruolo | Fasi intermedie delle varianti A, C, D e F. |
-| Coder MetaGPT | Engineer | Massimo `1024` token di output | Generazione finale del codice per le varianti A, C, D e F. |
+| Coder diretto | Coder Agent | Massimo `1024` token di output | Generazione del codice per Base e variante B; valore dichiarato nel paper. |
+| Coder custom | Product Manager, Architect e Project Manager | Massimo `512` token di output per ruolo | Fasi intermedie delle varianti A e D. |
+| Coder custom | Engineer | Massimo `1024` token di output | Generazione finale del codice per le varianti A e D. |
 | Generazione | Temperatura | `0.8` | Valore dichiarato nel paper. |
 | Generazione | Sampling | Attivato | `do_sample=True`, necessario affinché la temperatura venga applicata da Transformers. |
 | Generazione | Seed casuale | Non impostato | Due run possono produrre output differenti a causa del sampling. |
@@ -1054,12 +973,12 @@ python alignment.py --benchmark apps --save_dir baseline_apps
 | Fasi Specine | Selezione del disallineamento | Massimo `64` token | Limite specifico della fase interna. |
 | Fasi Specine | Regola di allineamento | Massimo `256` token | Limite specifico della fase interna. |
 | Fasi Specine | Generazione test aggiuntivi | Massimo `1024` token | Usata quando servono test generati dal modello. |
-| Tester MetaGPT | Test Analyst e Test Designer | Massimo `512` token per ruolo | Fasi intermedie delle varianti B, D e F. |
-| Tester MetaGPT | Test Generator e Test Reviewer / Validator | Massimo `1024` token per ruolo | Generazione e correzione del JSON finale. |
-| Output | Percorso risultati | `Results/<modello>/<benchmark>/<save_dir>/` | Per A–F viene aggiunto automaticamente il suffisso della variante. |
+| Tester custom | Test Analyst e Test Designer | Massimo `512` token per ruolo | Fasi intermedie delle varianti B e D. |
+| Tester custom | Test Generator e Test Reviewer / Validator | Massimo `1024` token per ruolo | Generazione e correzione del JSON finale. |
+| Output | Percorso risultati | `Results/<modello>/<benchmark>/<save_dir>/` | Per A, B e D viene aggiunto automaticamente il suffisso della variante. |
 | Output | Consumo token | Registrazione automatica | Salva ogni chiamata LLM e aggrega input/output per agente, iterazione e fase. |
 
-I valori `max tokens = 1024`, `temperature = 0.8` e `N = 10` seguono la sezione 4.4 del [paper di Specine](https://arxiv.org/pdf/2509.01313). La variante `A` mantiene la configurazione originale già implementata: Product Manager, Architect e Project Manager hanno limite 512 token; Engineer conserva 1024 token. Le varianti B–F compongono i tre moduli senza modificare il processo comune di lifting e alignment.
+I valori `max tokens = 1024`, `temperature = 0.8` e `N = 10` seguono la sezione 4.4 del [paper di Specine](https://arxiv.org/pdf/2509.01313). La variante `A` mantiene la configurazione originale già implementata: Product Manager, Architect e Project Manager hanno limite 512 token; Engineer conserva 1024 token. Le varianti B e D compongono i workflow custom senza modificare il processo comune di lifting e alignment.
 
 ## Avvio della baseline (Base)
 
@@ -1085,78 +1004,54 @@ python alignment.py --benchmark codecontests-raw --save_dir baseline_codecontest
 
 ## Avvio della variante A
 
-La variante `A` attiva il workflow MetaGPT nel Coder Agent. Anche questi comandi usano DeepSeek e un massimo di 10 iterazioni.
+La variante `A` attiva il workflow custom multi-ruolo nel Coder Agent. Anche questi comandi usano DeepSeek e un massimo di 10 iterazioni.
 
 ### APPS
 
 ```powershell
-python alignment.py --variant A --benchmark apps --save_dir metagpt_apps
+python alignment.py --variant A --benchmark apps --save_dir custom_apps
 ```
 
 ### APPS-Eval
 
 ```powershell
-python alignment.py --variant A --benchmark apps-eval --save_dir metagpt_apps_eval
+python alignment.py --variant A --benchmark apps-eval --save_dir custom_apps_eval
 ```
 
 ### CodeContests-Raw
 
 ```powershell
-python alignment.py --variant A --benchmark codecontests-raw --save_dir metagpt_codecontests_raw
+python alignment.py --variant A --benchmark codecontests-raw --save_dir custom_codecontests_raw
 ```
 
 La variante `A` esegue quattro chiamate al modello per ogni generazione del Coder Agent. Richiede quindi più tempo della baseline. Il modello viene caricato una sola volta.
 
-## Avvio delle varianti B–F
+## Avvio delle varianti B e D
 
 Gli esempi seguenti usano APPS. `apps-eval` e `codecontests-raw` funzionano sostituendo `--benchmark` e il nome di `--save_dir` come negli esempi della variante A.
 
-### Variante B MetaGPT nel Tester Agent
+### Variante B: workflow custom multi-ruolo nel Tester Agent
 
 ```powershell
-python alignment.py --variant B --benchmark apps --save_dir metagpt_tester_apps
+python alignment.py --variant B --benchmark apps --save_dir custom_tester_apps
 ```
 
 Il Coder resta diretto. Il Tester esegue quattro chiamate sequenziali: analisi, design, generazione JSON e revisione/validazione.
 
-### Variante C MetaGPT nel Coder e Tester Skill
+### Variante D: workflow custom nel Coder e nel Tester
 
 ```powershell
-python alignment.py --variant C --benchmark apps --save_dir metagpt_coder_tester_skill_apps
+python alignment.py --variant D --benchmark apps --save_dir custom_both_apps
 ```
 
-Il Coder riusa il workflow A. Il Tester resta un singolo agente, ma riceve `DEFAULT_TESTER_SKILL`.
-
-### Variante D MetaGPT nel Coder e nel Tester
-
-```powershell
-python alignment.py --variant D --benchmark apps --save_dir metagpt_both_apps
-```
-
-Coder e Tester usano entrambi i rispettivi workflow a quattro ruoli; nessuna Skill viene iniettata.
-
-### Variante E Tester Skill
-
-```powershell
-python alignment.py --variant E --benchmark apps --save_dir tester_skill_apps
-```
-
-Coder e Tester restano diretti; solo il prompt del Tester viene arricchito dalla Skill.
-
-### Variante F integrazione completa
-
-```powershell
-python alignment.py --variant F --benchmark apps --save_dir full_integration_apps
-```
-
-Il Coder usa MetaGPT. Il Tester usa MetaGPT e applica la Tester Skill durante analisi, design, generazione e review.
+Coder e Tester usano entrambi i rispettivi workflow a quattro ruoli.
 
 ## Esecuzione rapida
 
 Per controllare una configurazione con una sola iterazione usare questo comando.
 
 ```powershell
-python alignment.py --variant F --benchmark apps --save_dir controllo --max_iter 1
+python alignment.py --variant D --benchmark apps --save_dir controllo --max_iter 1
 ```
 
 ## Cache dell'Initial Code e parallelismo
@@ -1170,22 +1065,19 @@ La cache dipende dal modello effettivo, dal benchmark e dal workflow del Coder. 
 
 | Cache | Varianti che la condividono | Workflow Coder |
 | --- | --- | --- |
-| `test` | `base`, `B`, `E` | Coder diretto originale |
-| `test_A` | `A`, `C`, `D`, `F` | MetaGPT Coder: Product Manager, Architect, Project Manager, Engineer |
+| `test` | `base`, `B` | Coder diretto originale |
+| `test_A` | `A`, `D` | Coder custom: Product Manager, Architect, Project Manager, Engineer |
 
 Non copiare o rinominare `test` in `test_A`, o viceversa: contengono codice prodotto da architetture diverse e il confronto sperimentale diventerebbe invalido.
 
 Il programma non applica lock alla cache. Con lo stesso modello effettivo e lo stesso benchmark, eseguire in parallelo al massimo una variante per gruppo:
 
-- un processo scelto da `base/B/E`;
-- un processo scelto da `A/C/D/F`.
+- un processo scelto da `base/B`;
+- un processo scelto da `A/D`.
 
-Combinazioni consigliate includono `A + B`, `A + E`, `C + B`, `D + E` e `F + base`. Varianti dello stesso gruppo, come `B + E` oppure `A + C`, non devono partire insieme mentre la cache condivisa viene generata. Se la cache è già completa e compatibile, possono leggerla in parallelo perché i risultati finali hanno directory distinte.
+Combinazioni consigliate includono `A + B` e `D + base`. Varianti dello stesso gruppo, come `base + B` oppure `A + D`, non devono partire insieme mentre la cache condivisa viene generata. Se la cache è già completa e compatibile, possono leggerla in parallelo perché i risultati finali hanno directory distinte.
 
-Per eseguire `A`, `B` ed `E`, usare due fasi:
-
-1. avviare `A` e `B` in parallelo;
-2. avviare `E` dopo il completamento di `B`.
+Le varianti `A` e `B` possono essere avviate in parallelo perché usano gruppi cache diversi.
 
 Benchmark diversi e modelli effettivi diversi usano directory cache separate e possono essere eseguiti in parallelo, nei limiti di GPU, memoria e rate limit API.
 
@@ -1206,10 +1098,10 @@ I risultati vengono salvati secondo questa struttura.
 Results/<modello>/<benchmark>/<save_dir>/
 ```
 
-Per ogni variante A–F viene aggiunto automaticamente il relativo suffisso al nome indicato in `--save_dir`. Per esempio, il comando APPS della variante A crea la directory seguente.
+Per ogni variante supportata A, B e D viene aggiunto automaticamente il relativo suffisso al nome indicato in `--save_dir`. Per esempio, il comando APPS della variante A crea la directory seguente.
 
 ```text
-Results/deepseek-coder-7b-instruct-v1.5/apps/metagpt_apps_A/
+Results/deepseek-coder-7b-instruct-v1.5/apps/custom_apps_A/
 ```
 
 La console mostra Pass@1 e AvgPassRatio durante l'esecuzione. Se il processo viene interrotto, rilanciare lo stesso comando per riutilizzare gli artefatti già salvati.
@@ -1219,7 +1111,7 @@ Ogni chiamata al modello viene registrata nella directory del run:
 - `token_usage.jsonl`: un evento per chiamata, con benchmark, problema, iterazione, fase, agente, token di input, token di output e totale;
 - `token_usage_summary.json`: totale del benchmark e aggregazioni per agente, iterazione e fase.
 
-Per ogni problema che richiede test aggiuntivi vengono salvati anche `<problem_id>_test_case` e `<problem_id>_tester_trace.json`. La trace indica workflow, Skill e output intermedi dei ruoli Tester.
+Per ogni problema che richiede test aggiuntivi vengono salvati anche `<problem_id>_test_case` e `<problem_id>_tester_trace.json`. La trace indica workflow e output intermedi dei ruoli Tester.
 
 > [!note] Nota
 > **Come vengono contati i token.** Per i modelli locali, input e output sono calcolati direttamente dagli ID del tokenizer. Per le API vengono letti i valori `usage` restituiti dal provider. Se `usage` non è disponibile, il conteggio viene stimato e l'evento riporta `estimated: true` insieme al metodo usato.

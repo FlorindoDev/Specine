@@ -3,7 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
-from tester_skill import TesterSkill
 from token_usage import GenerationContext
 from sanitize import sanitize_code
 
@@ -35,13 +34,11 @@ class TestGenerationRequest:
 class TestGenerationResult:
     workflow: str
     test_cases: TestCases
-    skill: str | None = None
     artifacts: tuple[TesterArtifact, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "workflow": self.workflow,
-            "skill": self.skill,
             "artifacts": [
                 {"role": artifact.role, "content": artifact.content}
                 for artifact in self.artifacts
@@ -55,20 +52,15 @@ class TesterWorkflow(Protocol):
 
 
 class DirectTesterWorkflow:
-    """Original single-agent Tester, legacy-compatible without a skill."""
+    """Original single-agent Tester workflow."""
 
     _TEST_TOKEN_LIMIT = 1024
 
-    def __init__(
-        self,
-        generate_text: TextGenerator,
-        skill: TesterSkill | None = None,
-    ):
+    def __init__(self, generate_text: TextGenerator):
         self._generate_text = generate_text
-        self._skill = skill
 
     def generate(self, request: TestGenerationRequest) -> TestGenerationResult:
-        prompt = _build_direct_generation_prompt(request, self._skill)
+        prompt = _build_direct_generation_prompt(request)
         response = self._generate_text(
             prompt,
             self._TEST_TOKEN_LIMIT,
@@ -79,32 +71,22 @@ class DirectTesterWorkflow:
                 iteration=request.iteration,
             ),
         ) or ""
-        test_cases = (
-            _parse_legacy_test_cases(response)
-            if self._skill is None
-            else parse_test_cases(response, request.function_name)
-        )
+        test_cases = _parse_legacy_test_cases(response)
         return TestGenerationResult(
             workflow="direct",
             test_cases=test_cases,
-            skill=self._skill.name if self._skill else None,
             artifacts=(TesterArtifact("Tester Agent", response),),
         )
 
 
-class MetaGPTTesterWorkflow:
-    """Four-role MetaGPT workflow for test analysis, design, generation, and review."""
+class CustomTesterWorkflow:
+    """Custom four-role workflow for test analysis, design, generation, and review."""
 
     _ROLE_TOKEN_LIMIT = 512
     _TEST_TOKEN_LIMIT = 1024
 
-    def __init__(
-        self,
-        generate_text: TextGenerator,
-        skill: TesterSkill | None = None,
-    ):
+    def __init__(self, generate_text: TextGenerator):
         self._generate_text = generate_text
-        self._skill = skill
 
     def generate(self, request: TestGenerationRequest) -> TestGenerationResult:
         artifacts: list[TesterArtifact] = []
@@ -164,9 +146,8 @@ class MetaGPTTesterWorkflow:
             test_cases = parse_test_cases(generated, request.function_name)
 
         return TestGenerationResult(
-            workflow="metagpt",
+            workflow="custom",
             test_cases=test_cases,
-            skill=self._skill.name if self._skill else None,
             artifacts=tuple(artifacts),
         )
 
@@ -183,8 +164,6 @@ class MetaGPTTesterWorkflow:
             f"#ROLE:\n{role}",
             _build_specification_context(request),
         ]
-        if self._skill:
-            prompt_parts.append(self._skill.to_prompt())
         prompt_parts.extend(
             f"#{artifact.role.upper()} OUTPUT:\n{artifact.content}"
             for artifact in artifacts
@@ -203,13 +182,12 @@ class MetaGPTTesterWorkflow:
 
 
 def create_tester_workflow(
-    metagpt: bool,
+    custom_tester: bool,
     generate_text: TextGenerator,
-    skill: TesterSkill | None = None,
 ) -> TesterWorkflow:
-    if metagpt:
-        return MetaGPTTesterWorkflow(generate_text, skill)
-    return DirectTesterWorkflow(generate_text, skill)
+    if custom_tester:
+        return CustomTesterWorkflow(generate_text)
+    return DirectTesterWorkflow(generate_text)
 
 
 def parse_test_cases(
@@ -268,21 +246,14 @@ def _build_specification_context(request: TestGenerationRequest) -> str:
     return "\n\n".join(parts)
 
 
-def _build_direct_generation_prompt(
-    request: TestGenerationRequest,
-    skill: TesterSkill | None,
-) -> str:
+def _build_direct_generation_prompt(request: TestGenerationRequest) -> str:
     prompt = request.specification
     serialized_public_tests = json.dumps(request.public_test_cases)
     includes_public_tests = len(serialized_public_tests) < 1024
     if includes_public_tests:
         prompt += f"\n\n#TEST CASES:\n```json\n{serialized_public_tests}\n```"
 
-    if skill:
-        prompt += f"\n\n{skill.to_prompt()}"
-        instruction = _json_test_instruction()
-    else:
-        instruction = _original_test_instruction(includes_public_tests)
+    instruction = _original_test_instruction(includes_public_tests)
     return f"{prompt}\n\n#INSTRUCTION:\n{instruction}"
 
 

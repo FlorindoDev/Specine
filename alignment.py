@@ -10,7 +10,7 @@ from coder_workflow import (
     TextGenerator,
     create_coder_workflow,
 )
-from eval_code import eval_code
+from code_evaluator import evaluate_code
 from benchmarks import BENCHMARKS
 from data import build_specification, get_evaluation_test_cases, load_data, to_code_prompt
 from model import (
@@ -23,7 +23,6 @@ from model import (
     load_model,
 )
 from sanitize import sanitize_code, remove_code_blocks
-from tester_skill import DEFAULT_TESTER_SKILL
 from tester_workflow import (
     TestGenerationRequest,
     create_tester_workflow,
@@ -184,7 +183,11 @@ def alignment_rule(args, problem_id, ori_specification, ori_code, ori_test_resul
     )
     new_code = coder_result.code
     new_code = sanitize_code(new_code, ["```python", "```"])
-    _, new_test_result = eval_code(args, public_test_cases, new_code)
+    _, new_test_result = evaluate_code(
+        public_test_cases,
+        new_code,
+        debug=args.debug,
+    )
 
     return (
         new_specification,
@@ -214,9 +217,8 @@ def alignment():
         default=ArchitectureVariant.BASE.value,
         choices=[variant.value for variant in ArchitectureVariant],
         help=(
-            "base: original Specine; A: MetaGPT Coder; B: MetaGPT Tester; "
-            "C: MetaGPT Coder + Tester Skill; D: both MetaGPT workflows; "
-            "E: Tester Skill; F: both workflows + Tester Skill"
+            "base: original Specine; A: custom Coder; B: custom Tester; "
+            "D: both custom workflows"
         ),
     )
     parser.add_argument("--save_dir", default='', type=str, required=True)
@@ -272,11 +274,9 @@ def alignment():
         )
 
     coder_workflow = create_coder_workflow(args.variant, tracked_generate)
-    tester_skill = DEFAULT_TESTER_SKILL if capabilities.tester_skill else None
     tester_workflow = create_tester_workflow(
-        capabilities.metagpt_tester,
+        capabilities.custom_tester,
         tracked_generate,
-        tester_skill,
     )
     initial_run_name = initial_code_cache_name(capabilities)
     initial_result_dir = f'{model_result_dir}/{initial_run_name}'
@@ -327,7 +327,11 @@ def alignment():
             if ori_code is None:
                 ori_code = ''
             ori_code = sanitize_code(ori_code, ["```python", "```"])
-            _, ori_test_result = eval_code(args, all_test_cases, ori_code)
+            _, ori_test_result = evaluate_code(
+                all_test_cases,
+                ori_code,
+                debug=args.debug,
+            )
 
             os.makedirs(initial_result_dir, exist_ok=True)
             open(initial_prompt_path, 'w', encoding='utf-8').write(ori_prompt)
@@ -414,7 +418,11 @@ def alignment():
                 print('*' * 40)
                 continue
             else:
-                _, ori_test_result = eval_code(args, public_test_cases, ori_code)
+                _, ori_test_result = evaluate_code(
+                    public_test_cases,
+                    ori_code,
+                    debug=args.debug,
+                )
                 if ori_test_result == 1.0:
                     print()
                     print('*' * 40)
@@ -456,9 +464,17 @@ def alignment():
                 json.dump(generated_test_cases, test_case_file, ensure_ascii=False)
             save_workflow_trace(tester_trace_path, tester_result.to_dict())
 
-        _, ori_test_result = eval_code(args, public_test_cases, ori_code)
+        _, ori_test_result = evaluate_code(
+            public_test_cases,
+            ori_code,
+            debug=args.debug,
+        )
         if len(generated_test_cases["inputs"]):
-            _, ori_test_result2 = eval_code(args, generated_test_cases, ori_code)
+            _, ori_test_result2 = evaluate_code(
+                generated_test_cases,
+                ori_code,
+                debug=args.debug,
+            )
         else:
             ori_test_result2 = 0.0
 
@@ -480,9 +496,17 @@ def alignment():
                 coder_trace_path = f'{run_result_dir}/{problem_id}_coder_trace_{iter_n}.json'
                 new_coder_trace = load_coder_trace(coder_trace_path)
                 new_code = sanitize_code(new_code, ["```python", "```"])
-                _, new_test_result = eval_code(args, public_test_cases, new_code)
+                _, new_test_result = evaluate_code(
+                    public_test_cases,
+                    new_code,
+                    debug=args.debug,
+                )
                 if len(generated_test_cases["inputs"]):
-                    _, new_test_result2 = eval_code(args, generated_test_cases, new_code)
+                    _, new_test_result2 = evaluate_code(
+                        generated_test_cases,
+                        new_code,
+                        debug=args.debug,
+                    )
                 else:
                     new_test_result2 = 0.0
 
@@ -512,10 +536,18 @@ def alignment():
                 optimization_list.append(new_optimization)
                 new_code = sanitize_code(new_code, ["```python", "```"])
                 if len(generated_test_cases["inputs"]):
-                    _, new_test_result2 = eval_code(args, generated_test_cases, new_code)
+                    _, new_test_result2 = evaluate_code(
+                        generated_test_cases,
+                        new_code,
+                        debug=args.debug,
+                    )
                 else:
                     new_test_result2 = 0.0
-                _, new_test_result_all = eval_code(args, all_test_cases, new_code)
+                _, new_test_result_all = evaluate_code(
+                    all_test_cases,
+                    new_code,
+                    debug=args.debug,
+                )
 
                 print(f"        >> Iter={iter_n} [id={problem_id}](hierarchical criteria): {round(best_test_result * 100, 2)}%({round(best_test_result2 * 100, 2)}%) ==> {round(new_test_result * 100, 2)}%({round(new_test_result2 * 100, 2)}%)")
                 if best_test_result < new_test_result:

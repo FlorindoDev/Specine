@@ -63,8 +63,8 @@ class DirectCoderWorkflow:
         return CodeGenerationResult(workflow="direct", code=code or "")
 
 
-class MetaGPTCoderWorkflow:
-    """MetaGPT software-company SOP adapted to single-file code generation."""
+class CustomCoderWorkflow:
+    """Custom four-role workflow for single-file code generation."""
 
     _ROLE_TOKEN_LIMIT = 512
     _CODE_TOKEN_LIMIT = 1024
@@ -129,7 +129,7 @@ class MetaGPTCoderWorkflow:
         artifacts.append(RoleArtifact("Engineer", code))
 
         return CodeGenerationResult(
-            workflow="metagpt",
+            workflow="custom",
             code=code,
             artifacts=tuple(artifacts),
         )
@@ -173,8 +173,8 @@ def create_coder_workflow(
     generate_text: TextGenerator,
 ) -> CoderWorkflow:
     capabilities = validate_architecture_variant(variant)
-    if capabilities.metagpt_coder:
-        return MetaGPTCoderWorkflow(generate_text)
+    if capabilities.custom_coder:
+        return CustomCoderWorkflow(generate_text)
     return DirectCoderWorkflow(generate_text)
 
 
