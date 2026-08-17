@@ -395,6 +395,10 @@ python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-0
 For every `N`, the script uses only the results from the corresponding iteration for all problems: `N=1` reads files with the `_test_result_0` suffix, while `N=10` reads `_test_result_9` files. Therefore, when calculating Pass@1 for iteration 1, only the first-iteration results from all benchmark problems are considered.
 Pass@1 is the percentage of problems with a pass ratio of `1.0`; AvgPassRatio is the average pass ratio over private tests. The summary is printed and saved to `iteration_metrics.json`.
 
+When `token_usage_summary.json` is present in the run directory, evaluation also prints the total token usage, totals for each iteration, totals for each agent, and each agent's total for every iteration. `Initial` identifies calls made before alignment iteration 1. These values are saved under `token_usage` in `iteration_metrics.json`; older runs without a token summary remain supported and save `token_usage: null`.
+
+When `token_usage.jsonl` is present, evaluation also reports the percentage of truncated responses for every agent and every iteration. The percentage is `truncated calls / analyzed calls`; an agent with no analyzed call in an iteration reports `n/a`. API calls are truncated when the provider returns `finish_reason="length"`. Local-model calls are truncated when generation reaches `max_new_tokens` without ending with an EOS token. When the explicit truncation flag is unavailable, or termination through EOS cannot be verified, evaluation falls back to an output-limit heuristic: it compares the exact number of generated tokens with the configured output limit for the call, the response truncated when that limit is reached or exceeded. Events with estimated token counts or without a known output limit are excluded from the heuristic. The breakdown is saved under `truncation` in `iteration_metrics.json`.
+
 If some files are missing, each row is marked `partial` and the JSON contains `complete: false`. These values describe only the available problems and cannot be compared with the paper's complete results.
 
 To view the help generated directly by each entry point, use these commands after installing the dependencies.
@@ -571,8 +575,8 @@ The console displays Pass@1 and AvgPassRatio during execution. If the process is
 
 Each model call is logged in the run directory:
 
-- `token_usage.jsonl`: one event per call, containing benchmark, problem, iteration, phase, agent, input tokens, output tokens, and total;
-- `token_usage_summary.json`: benchmark total and aggregations by agent, iteration, and phase.
+- `token_usage.jsonl`: one event per call, containing benchmark, problem, iteration, phase, agent, token counts, output limit, finish reason, truncation flag, and detection method;
+- `token_usage_summary.json`: benchmark totals and aggregations by agent, iteration, and phase, including truncation counters for newly recorded calls.
 
 For each problem that requires additional tests, `<problem_id>_test_case` and `<problem_id>_tester_trace.json` are also saved. The trace identifies the workflow and intermediate outputs from the Tester roles.
 
@@ -932,6 +936,10 @@ python eval_code.py --results_dir "Results/openrouter__openai_gpt-4o-mini-2024-0
 Per ogni `N`, lo script usa esclusivamente i risultati della corrispondente iterazione per tutti i problemi: `N=1` legge i file con suffisso `_test_result_0`, mentre `N=10` legge `_test_result_9`. Quindi quando calcolo Pass@1 del iterazione 1 sto consdierando solo i risultati della prima iterazione di tutti i problemi del banckmark.
 Pass@1 è la percentuale di problemi con pass ratio `1.0`; AvgPassRatio è la media dei pass ratio dei test privati. Il riepilogo viene stampato e salvato in `iteration_metrics.json`.
 
+Quando `token_usage_summary.json` è presente nella directory del run, la valutazione mostra anche i token totali, i totali per ogni iterazione, i totali per ogni agente e il totale di ciascun agente in ogni iterazione. `Initial` identifica le chiamate eseguite prima dell'iterazione di alignment 1. Questi valori vengono salvati sotto `token_usage` in `iteration_metrics.json`; i run precedenti senza riepilogo token restano supportati e salvano `token_usage: null`.
+
+Quando `token_usage.jsonl` è presente, la valutazione mostra anche la percentuale di risposte troncate per ogni agente e per ogni iterazione. La percentuale è `chiamate troncate / chiamate analizzate`; un agente senza chiamate analizzate nell'iterazione mostra `n/a`. Per le chiamate API una risposta è troncata quando il provider restituisce `finish_reason="length"`. Per i modelli locali è troncata quando la generazione raggiunge `max_new_tokens` senza terminare con un token EOS. Quando il flag esplicito di troncamento non è disponibile, oppure non è possibile verificare la terminazione tramite EOS, la valutazione usa un'euristica basata sul limite di output: confronta il numero esatto di token generati con il limite configurato per la chiamata, la risposta è considera troncata quando tale limite viene raggiunto o superato. Gli eventi con un conteggio token stimato o senza un limite di output noto sono esclusi dall'euristica. Il dettaglio viene salvato sotto `truncation` in `iteration_metrics.json`.
+
 Se alcuni file mancano, ogni riga indica `partial` e il JSON contiene `complete: false`. Questi valori descrivono soltanto i problemi disponibili e non sono confrontabili con i risultati completi del paper.
 
 Per vedere la guida generata direttamente da ogni entry point usare questi comandi dopo avere installato le dipendenze.
@@ -1108,8 +1116,8 @@ La console mostra Pass@1 e AvgPassRatio durante l'esecuzione. Se il processo vie
 
 Ogni chiamata al modello viene registrata nella directory del run:
 
-- `token_usage.jsonl`: un evento per chiamata, con benchmark, problema, iterazione, fase, agente, token di input, token di output e totale;
-- `token_usage_summary.json`: totale del benchmark e aggregazioni per agente, iterazione e fase.
+- `token_usage.jsonl`: un evento per chiamata, con benchmark, problema, iterazione, fase, agente, conteggi token, limite di output, motivo di terminazione, flag di troncamento e metodo di rilevamento;
+- `token_usage_summary.json`: totali del benchmark e aggregazioni per agente, iterazione e fase, inclusi i contatori di troncamento per le nuove chiamate registrate.
 
 Per ogni problema che richiede test aggiuntivi vengono salvati anche `<problem_id>_test_case` e `<problem_id>_tester_trace.json`. La trace indica workflow e output intermedi dei ruoli Tester.
 

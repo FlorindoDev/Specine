@@ -104,6 +104,11 @@ def generate_code(
         output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
     ]
     output_tokens = sum(len(output_ids) for output_ids in generated_ids)
+    truncated = _local_generation_was_truncated(
+        generated_ids,
+        max_new_tokens,
+        tokenizer.eos_token_id,
+    )
     _record_usage(
         usage_recorder,
         context,
@@ -111,6 +116,10 @@ def generate_code(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             source="model_tokenizer",
+            max_output_tokens=max_new_tokens,
+            finish_reason="length" if truncated else "stop",
+            truncated=truncated,
+            truncation_detection="local_token_limit_and_eos",
         ),
     )
     code = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -245,7 +254,7 @@ def generate_code_api(
         _record_usage(
             usage_recorder,
             context,
-            _api_token_measurement(completion, prompt, code),
+            _api_token_measurement(completion, prompt, code, max_tokens),
         )
 
     if args.debug:
@@ -253,7 +262,17 @@ def generate_code_api(
     return code
 
 
-def _api_token_measurement(completion, prompt: str, output: str) -> TokenMeasurement:
+def _api_token_measurement(
+    completion,
+    prompt: str,
+    output: str,
+    max_output_tokens: int,
+) -> TokenMeasurement:
+    finish_reason = _api_finish_reason(completion)
+    truncated = None if finish_reason is None else finish_reason == "length"
+    truncation_detection = (
+        None if finish_reason is None else "api_finish_reason"
+    )
     usage = completion.usage
     if usage is not None:
         input_tokens = getattr(usage, "prompt_tokens", None)
@@ -267,6 +286,10 @@ def _api_token_measurement(completion, prompt: str, output: str) -> TokenMeasure
                 input_tokens=int(input_tokens),
                 output_tokens=int(output_tokens),
                 source="api_usage",
+                max_output_tokens=max_output_tokens,
+                finish_reason=finish_reason,
+                truncated=truncated,
+                truncation_detection=truncation_detection,
             )
 
     try:
@@ -285,7 +308,40 @@ def _api_token_measurement(completion, prompt: str, output: str) -> TokenMeasure
         output_tokens=output_tokens,
         source=source,
         estimated=True,
+        max_output_tokens=max_output_tokens,
+        finish_reason=finish_reason,
+        truncated=truncated,
+        truncation_detection=truncation_detection,
     )
+
+
+def _api_finish_reason(completion) -> str | None:
+    choices = getattr(completion, "choices", None)
+    if not choices:
+        return None
+    finish_reason = getattr(choices[0], "finish_reason", None)
+    return finish_reason if isinstance(finish_reason, str) else None
+
+
+def _local_generation_was_truncated(
+    generated_ids,
+    max_new_tokens: int,
+    eos_token_id,
+) -> bool:
+    if isinstance(eos_token_id, int):
+        eos_token_ids = {eos_token_id}
+    elif eos_token_id is None:
+        eos_token_ids = set()
+    else:
+        eos_token_ids = set(eos_token_id)
+
+    for output_ids in generated_ids:
+        if len(output_ids) < max_new_tokens:
+            continue
+        last_token_id = int(output_ids[-1].item())
+        if last_token_id not in eos_token_ids:
+            return True
+    return False
 
 
 def _estimate_tokens_from_characters(text: str) -> int:

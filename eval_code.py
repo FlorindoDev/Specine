@@ -8,6 +8,13 @@ from statistics import fmean
 from typing import Any
 
 from cli_types import positive_int
+from token_usage import (
+    TokenUsageReport,
+    TruncationReport,
+    TruncationStats,
+    load_token_usage_report,
+    load_truncation_report,
+)
 
 
 _ITERATION_RESULT_PATTERN = re.compile(
@@ -34,6 +41,8 @@ class IterationMetricsReport:
     iteration_count: int
     complete: bool
     iterations: tuple[IterationMetrics, ...]
+    token_usage: TokenUsageReport | None
+    truncation: TruncationReport | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +52,12 @@ class IterationMetricsReport:
             "iteration_count": self.iteration_count,
             "complete": self.complete,
             "iterations": [asdict(metric) for metric in self.iterations],
+            "token_usage": (
+                None if self.token_usage is None else self.token_usage.to_dict()
+            ),
+            "truncation": (
+                None if self.truncation is None else self.truncation.to_dict()
+            ),
         }
 
 
@@ -93,6 +108,8 @@ def build_iteration_metrics_report(
         iteration_count=len(iteration_metrics),
         complete=report_complete,
         iterations=iteration_metrics,
+        token_usage=load_token_usage_report(directory),
+        truncation=load_truncation_report(directory),
     )
 
 
@@ -216,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
 
     _print_iteration_metrics(report)
+    _print_token_usage(report.token_usage)
+    _print_truncation(report.truncation)
     print(f"Metrics saved: {output_path}")
     if not report.complete:
         print("WARNING: partial run; metrics are not comparable with paper results")
@@ -240,6 +259,62 @@ def _print_iteration_metrics(report: IterationMetricsReport) -> None:
 
 def _format_percentage(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
+
+
+def _print_token_usage(token_usage: TokenUsageReport | None) -> None:
+    print()
+    if token_usage is None:
+        print("Token usage: unavailable (token_usage_summary.json not found)")
+        return
+
+    print(f"Total tokens: {token_usage.total_tokens}")
+    print("Tokens by iteration")
+    for iteration in token_usage.iterations:
+        label = "Initial" if iteration.iteration is None else str(iteration.iteration)
+        print(f"  {label}: {iteration.total_tokens}")
+
+    print("Tokens by agent")
+    for agent in token_usage.agents:
+        print(f"  {agent.agent}: {agent.total_tokens}")
+
+    print("Tokens by agent and iteration")
+    for iteration in token_usage.iterations:
+        label = "Initial" if iteration.iteration is None else str(iteration.iteration)
+        for agent in iteration.agents:
+            print(f"  {label} | {agent.agent}: {agent.total_tokens}")
+
+
+def _print_truncation(truncation: TruncationReport | None) -> None:
+    print()
+    if truncation is None:
+        print("Response truncation: unavailable (token_usage.jsonl not found)")
+        return
+
+    methods = ", ".join(truncation.detection_methods) or "none"
+    print(f"Response truncation detection: {methods}")
+    print(f"Truncated responses: {_format_truncation(truncation.stats)}")
+
+    print("Truncated responses by agent")
+    for agent in truncation.agents:
+        print(f"  {agent.agent}: {_format_truncation(agent.stats)}")
+
+    print("Truncated responses by agent and iteration")
+    for iteration in truncation.iterations:
+        label = "Initial" if iteration.iteration is None else str(iteration.iteration)
+        for agent in iteration.agents:
+            print(
+                f"  {label} | {agent.agent}: "
+                f"{_format_truncation(agent.stats)}"
+            )
+
+
+def _format_truncation(stats: TruncationStats) -> str:
+    percentage = stats.truncated_response_percent
+    formatted_percentage = "n/a" if percentage is None else f"{percentage:.2f}%"
+    return (
+        f"{formatted_percentage} "
+        f"({stats.truncated_calls}/{stats.analyzed_calls})"
+    )
 
 
 if __name__ == '__main__':
